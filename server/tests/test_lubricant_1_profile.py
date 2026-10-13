@@ -16,18 +16,18 @@ from device_control_server import (
     resolve_powder_identity,
     resolve_tail_pulse_config,
 )
-from powder_sampling_control.dispensing_algorithm.profiles import (
+from powder_sampling_control.dispensing_algorithm.core import (
     load_control_profile,
     resolve_default_target_rate_band,
 )
-from powder_sampling_control.dispensing_algorithm.profiles import interpolate_profile
-from powder_sampling_control.dispensing_algorithm.feedback_controller import (
+from powder_sampling_control.dispensing_algorithm.core import interpolate_profile
+from powder_sampling_control.dispensing_algorithm.core import (
     ContinuousFeedbackController,
     FeedbackControllerSettings,
     FeedbackInitialParameters,
     FeedbackObservation,
 )
-from powder_sampling_control.dispensing_algorithm.powder_fingerprint import load_fingerprint
+from powder_sampling_control.dispensing_algorithm.calibration import load_fingerprint
 
 
 POWDER_ID = "powder-20260817-100751-4e849e"

@@ -20,42 +20,19 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from device_dashboard import DeviceReader, HTML
 from powder_sampling_control.device_adapters import load_balance_calibration
-from powder_sampling_control.dispensing_algorithm import (
+from powder_sampling_control.dispensing_algorithm.core import (
     ContinuousFeedbackController,
     FeedbackControllerSettings,
     FeedbackInitialParameters,
     FeedbackObservation,
     MassMotionEstimator,
     MassMotionEstimatorSettings,
-    WindowPidConfig,
-    WindowPidPlanner,
-    WindowPidState,
-)
-from powder_sampling_control.dispensing_algorithm.continuous_taper_planner import (
-    ContinuousTaperConfig,
-    ContinuousTaperPlanner,
-)
-from powder_sampling_control.dispensing_algorithm.profiles import (
+    acceptance_limits,
     list_control_profiles,
     load_control_profile,
     resolve_default_target_rate_band,
     resolve_control_profile,
     resolve_partial_target_overrides,
-)
-from powder_sampling_control.dispensing_algorithm.constant_rate_controller import (
-    ConstantRateController,
-    ConstantRateObservation,
-    ConstantRateSettings,
-)
-from powder_sampling_control.dispensing_algorithm.experiment_orchestrator import (
-    GridSpec,
-    GridDimension,
-    GridConstraint,
-    expand_grid,
-    collect_scan_results,
-    REFERENCE_POWDER_SCANS,
-)
-from powder_sampling_control.dispensing_algorithm.profiles import (
     DISPENSE_ALLOWED_OVERWEIGHT_MG,
     DISPENSE_ALLOWED_UNDERWEIGHT_MG,
     DISPENSE_PRESETS,
@@ -64,7 +41,18 @@ from powder_sampling_control.dispensing_algorithm.profiles import (
     powder_classification_params,
     validate_dispense_target,
 )
-from powder_sampling_control.dispensing_algorithm.powder_fingerprint import (
+from powder_sampling_control.dispensing_algorithm.calibration import (
+    ContinuousTaperConfig,
+    ContinuousTaperPlanner,
+    ConstantRateController,
+    ConstantRateObservation,
+    ConstantRateSettings,
+    GridSpec,
+    GridDimension,
+    GridConstraint,
+    expand_grid,
+    collect_scan_results,
+    REFERENCE_POWDER_SCANS,
     PROBE_DEFAULT_DURATION_S,
     PROBE_DEFAULT_DUTY_PERMYRIAD,
     PROBE_DEFAULT_FREQUENCY_HZ,
@@ -77,17 +65,15 @@ from powder_sampling_control.dispensing_algorithm.powder_fingerprint import (
     list_fingerprints,
     load_fingerprint,
     save_fingerprint,
-)
-from powder_sampling_control.dispensing_algorithm.rate_band_searcher import (
     START_DUTY_PERMYRIAD,
     START_FREQUENCY_HZ,
     START_WINDOW_POSITION,
     TARGET_RATE_RANGE_MG_S,
     apply_rate_search,
     execute_rate_search,
-)
-from powder_sampling_control.dispensing_algorithm.models import (
-    acceptance_limits,
+    WindowPidConfig,
+    WindowPidPlanner,
+    WindowPidState,
 )
 
 

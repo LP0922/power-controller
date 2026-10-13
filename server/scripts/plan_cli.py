@@ -1,15 +1,9 @@
 """Offline planning/preview CLI for the dispensing algorithms (no hardware access).
 
-Consolidates the former standalone preview scripts into one entry point:
-
-    python plan_cli.py four-stage   ...  (was plan_dispense.py)
-    python plan_cli.py feedback     ...  (was plan_feedback_dispense.py)
-    python plan_cli.py window-pid   ...  (was plan_window_pid_dispense.py)
-    python plan_cli.py taper        ...  (was plan_continuous_taper_dispense.py)
-    python plan_cli.py replay       ...  (was replay_dynamic_rate_planner.py)
-    python plan_cli.py profile      ...  (was generate_control_profile.py)
-
-Each subcommand keeps the original arguments and output format.
+    python plan_cli.py feedback     ...  preview the production feedback controller
+    python plan_cli.py window-pid   ...  preview the window-PID experiment planner
+    python plan_cli.py taper        ...  preview the continuous-taper planner
+    python plan_cli.py profile      ...  preview/write a draft control profile
 """
 
 from __future__ import annotations
@@ -23,93 +17,24 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from powder_sampling_control.dispensing_algorithm import (  # noqa: E402
+from powder_sampling_control.dispensing_algorithm.core import (  # noqa: E402
     ContinuousFeedbackController,
-    ContinuousTaperConfig,
-    ContinuousTaperPlanner,
-    DynamicRatePlanner,
     FeedbackControllerSettings,
     FeedbackInitialParameters,
     FeedbackObservation,
-    FourStagePlanner,
-    L0Repository,
-    LocalYieldEstimator,
-    MassMotionEstimator,
-    MassObservation,
-    PlannerContext,
-    RatePlannerSettings,
-    Recipe,
-)
-from powder_sampling_control.dispensing_algorithm.profiles import (  # noqa: E402
     DISPENSE_ALLOWED_OVERWEIGHT_MG,
     DISPENSE_ALLOWED_UNDERWEIGHT_MG,
     DISPENSE_TARGET_PROFILES,
+    build_candidate_control_profile,
     dispense_plan,
 )
-from powder_sampling_control.dispensing_algorithm.profiles import (  # noqa: E402
-    build_candidate_control_profile,
-)
-from powder_sampling_control.dispensing_algorithm.window_pid_planner import (  # noqa: E402
+from powder_sampling_control.dispensing_algorithm.calibration import (  # noqa: E402
+    ContinuousTaperConfig,
+    ContinuousTaperPlanner,
     WindowPidConfig,
     WindowPidPlanner,
     WindowPidState,
 )
-
-
-# ── four-stage (was plan_dispense.py) ────────────────────────────────────────
-
-
-def cmd_four_stage(args: argparse.Namespace) -> int:
-    repository = L0Repository.from_json(args.l0_path)
-    profile = repository.select(
-        powder_type=args.powder_type,
-        powder_batch=args.powder_batch,
-        feeder_head=args.feeder_head,
-        recipe_version=args.recipe_version,
-        target_mass_mg=args.target_mg,
-    )
-    recipe = Recipe("preview", args.target_mg, args.allowed_overweight_mg)
-    estimator = LocalYieldEstimator.from_directory(args.calibration_dir)
-    decision = FourStagePlanner(yield_estimator=estimator).next_decision(
-        PlannerContext(
-            recipe=recipe,
-            profile=profile,
-            observation=MassObservation(args.observed_mg, stable=True, communication_ok=True),
-            predicted_tail_mg=args.predicted_tail_mg,
-        )
-    )
-    payload = {
-        "profile_id": profile.profile_id,
-        "calibration_sample_count": estimator.sample_count,
-        "decision": asdict(decision),
-    }
-    payload["decision"]["stage"] = decision.stage.value
-    print(json.dumps(payload, indent=2))
-    return 0
-
-
-def add_four_stage_parser(sub) -> None:
-    p = sub.add_parser("four-stage", help="preview a four-stage LA10 dispensing decision")
-    p.add_argument("--target-mg", type=float, required=True)
-    p.add_argument("--observed-mg", type=float, default=0.0)
-    p.add_argument("--predicted-tail-mg", type=float, default=0.0)
-    p.add_argument("--allowed-overweight-mg", type=float, default=5.0)
-    p.add_argument("--powder-type", default="reference_powder")
-    p.add_argument("--powder-batch", default="reference_batch")
-    p.add_argument("--feeder-head", default="la10_vibration_head")
-    p.add_argument("--recipe-version", default="v1")
-    p.add_argument(
-        "--l0-path",
-        type=Path,
-        default=PROJECT_ROOT / "config" / "algorithm" / "l0_profiles.example.json",
-    )
-    p.add_argument(
-        "--calibration-dir",
-        type=Path,
-        default=PROJECT_ROOT / "data" / "calibration",
-        help="completed physical calibration JSON directory",
-    )
-    p.set_defaults(func=cmd_four_stage)
 
 
 # ── feedback (was plan_feedback_dispense.py) ─────────────────────────────────
@@ -338,76 +263,6 @@ def add_taper_parser(sub) -> None:
     p.set_defaults(func=cmd_taper)
 
 
-# ── replay (was replay_dynamic_rate_planner.py) ──────────────────────────────
-
-
-def _replay(record: dict, initial_frequency_hz: int = 60) -> list[dict]:
-    planner = DynamicRatePlanner(
-        RatePlannerSettings(
-            severe_update_interval_s=0.25,
-            medium_update_interval_s=0.5,
-            small_update_interval_s=1.0,
-            near_target_update_interval_s=1.5,
-        )
-    )
-    estimator = MassMotionEstimator()
-    frequency_hz = initial_frequency_hz
-    updates = []
-    last_update_s = 0.0
-    for sample in record.get("samples", []):
-        elapsed_s = float(sample["elapsed_s"])
-        motion = estimator.update(elapsed_s, max(0.0, float(sample["mass_mg"])))
-        decision = planner.decide(
-            filtered_mass_mg=motion.filtered_mass_mg,
-            measured_rate_mg_s=motion.rate_mg_s,
-            current_frequency_hz=frequency_hz,
-            acceleration_mg_s2=motion.acceleration_mg_s2,
-            jerk_mg_s3=motion.jerk_mg_s3,
-            predicted_mass_mg=motion.predicted_mass_mg,
-            predicted_rate_mg_s=motion.predicted_rate_mg_s,
-            seconds_since_frequency_change=elapsed_s - last_update_s,
-            rate_valid=motion.valid,
-        )
-        stage_changed = updates and decision.stage.value != updates[-1]["stage"]
-        adjustment_due = (
-            stage_changed
-            or elapsed_s - last_update_s >= decision.next_update_interval_s
-        )
-        if adjustment_due and decision.frequency_changed:
-            updates.append(
-                {
-                    "elapsed_s": elapsed_s,
-                    "mass_mg": round(motion.filtered_mass_mg, 3),
-                    "predicted_mass_mg": round(motion.predicted_mass_mg, 3),
-                    "stage": decision.stage.value,
-                    "measured_rate_mg_s": round(decision.measured_rate_mg_s, 3),
-                    "predicted_rate_mg_s": round(decision.predicted_rate_mg_s, 3),
-                    "acceleration_mg_s2": round(decision.acceleration_mg_s2, 3),
-                    "jerk_mg_s3": round(decision.jerk_mg_s3, 3),
-                    "target_rate_mg_s": decision.target_rate_mg_s,
-                    "frequency_before_hz": frequency_hz,
-                    "frequency_after_hz": decision.next_frequency_hz,
-                    "reason": decision.reason,
-                }
-            )
-            frequency_hz = decision.next_frequency_hz
-            last_update_s = elapsed_s
-    return updates
-
-
-def cmd_replay(args: argparse.Namespace) -> int:
-    record = json.loads(args.record.read_text(encoding="utf-8"))
-    print(json.dumps(_replay(record, args.initial_frequency_hz), ensure_ascii=False, indent=2))
-    return 0
-
-
-def add_replay_parser(sub) -> None:
-    p = sub.add_parser("replay", help="replay saved live-rate samples through the local frequency planner")
-    p.add_argument("record", type=Path, help="saved continuous-run JSON")
-    p.add_argument("--initial-frequency-hz", type=int, default=60)
-    p.set_defaults(func=cmd_replay)
-
-
 # ── profile (was generate_control_profile.py) ────────────────────────────────
 
 
@@ -466,11 +321,9 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    add_four_stage_parser(sub)
     add_feedback_parser(sub)
     add_window_pid_parser(sub)
     add_taper_parser(sub)
-    add_replay_parser(sub)
     add_profile_parser(sub)
     args = parser.parse_args()
     return args.func(args)

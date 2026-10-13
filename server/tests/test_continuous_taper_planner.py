@@ -1,6 +1,6 @@
 import unittest
 
-from powder_sampling_control.dispensing_algorithm.continuous_taper_planner import (
+from powder_sampling_control.dispensing_algorithm.calibration import (
     ContinuousTaperPlanner,
     ContinuousTaperStage,
 )

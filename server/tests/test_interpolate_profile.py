@@ -6,7 +6,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from powder_sampling_control.dispensing_algorithm.profiles import (
+from powder_sampling_control.dispensing_algorithm.core import (
     DISPENSE_TARGET_PROFILES,
     interpolate_profile,
     validate_dispense_target,

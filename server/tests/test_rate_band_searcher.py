@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from powder_sampling_control.dispensing_algorithm.rate_band_searcher import (
+from powder_sampling_control.dispensing_algorithm.calibration import (
     RateSearchResult,
     _is_stable,
     _not_converged_band,
@@ -175,7 +175,7 @@ class RateSearchResultTests(unittest.TestCase):
 import threading
 import time
 
-import powder_sampling_control.dispensing_algorithm.rate_band_searcher as rbs
+import powder_sampling_control.dispensing_algorithm.calibration as rbs
 
 
 class _Measurement:

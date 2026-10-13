@@ -17,7 +17,7 @@ from device_control_server import (
     resolve_tail_pulse_config,
 )
 from device_dashboard import HTML as DEVICE_DASHBOARD_HTML
-from powder_sampling_control.dispensing_algorithm.profiles import interpolate_profile
+from powder_sampling_control.dispensing_algorithm.core import interpolate_profile
 from device_maintenance import position_schedule
 
 

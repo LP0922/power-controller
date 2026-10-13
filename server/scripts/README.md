@@ -5,12 +5,13 @@ long-running service. Run any file with `--help` for the full option list.
 
 ## plan_cli.py — offline algorithm previews (no hardware)
 
-    python plan_cli.py four-stage --target-mg 500        # was plan_dispense.py
-    python plan_cli.py feedback 500 0 --frequency-hz ... # was plan_feedback_dispense.py
-    python plan_cli.py window-pid 480 --target-mg 500    # was plan_window_pid_dispense.py
-    python plan_cli.py taper 480 --json                  # was plan_continuous_taper_dispense.py
-    python plan_cli.py replay run.json                   # was replay_dynamic_rate_planner.py
-    python plan_cli.py profile POWDER_ID [--write]       # was generate_control_profile.py
+    python plan_cli.py feedback 500 0 --frequency-hz ... # production feedback controller
+    python plan_cli.py window-pid 480 --target-mg 500    # window-PID experiment planner
+    python plan_cli.py taper 480 --json                  # continuous-taper planner
+    python plan_cli.py profile POWDER_ID [--write]       # draft control-profile generator
+
+The former `four-stage` and `replay` subcommands were removed together with
+the legacy four-stage/L0/ILC and dynamic-rate planners.
 
 The control-profile workflow still follows `docs/control-profile-experiment-steps.md`
 before generated values are treated as qualified control settings.
@@ -42,13 +43,6 @@ before `calibrate-scale`, `calibrate-yield`, `monitor-drift`, or
 `diagnose-empty`. `vibration-test`, `window-sweep`, `scan-startup`, and
 `save-result` talk to the device backend over HTTP instead, so the dashboard
 can show live data while a test runs.
-
-## dispense_500mg.py — 500 mg closed-loop workflow
-
-    python dispense_500mg.py plan 480 --json   # offline preview (was plan_500mg_state_dispense.py)
-    python dispense_500mg.py run --execute     # physical run (was execute_500mg_state_dispense.py)
-    python dispense_500mg.py run --execute --serve --port 8766
-                                               # executor + live monitor page
 
 ## Service
 

@@ -1,17 +1,984 @@
-"""Target-mass independent feedback control for continuous dispensing.
+"""生产出料算法链——单一合并模块。
 
-This module is deliberately separate from ILC and from device adapters. ILC
-may provide the initial frequency, duty, and window position, while this
-controller uses live mass-motion observations to trim duty and window position
-without changing frequency during a task.
+按依赖顺序合并的各部分：
+
+    1. 产品需求、共享契约、验收限值（原 models.py；
+       旧版 L0 仓储 / 良率估计器 / 四阶段支持已随
+       four_stage_planner.py 和 ilc.py 一并移除）
+    2. 质量-运动观测器（原 mass_motion_estimator.py）
+    3. 档位种子、控制档位加载、草稿生成（原 profiles.py）
+    4. 连续反馈控制器（原 feedback_controller.py）
+
+纯算法层：此处不打开串口、不下发设备命令；
+所有硬件写入均由执行器负责。
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 from math import ceil
+from pathlib import Path
 from time import monotonic
+from typing import Any
+
+# ── 产品需求与共享契约（原 models.py）─────────────────────────
+
+
+@dataclass(frozen=True)
+class FeedAction:
+    """单条有边界的 LA10 窗口/振动指令。"""
+
+    window_position_units: int
+    frequency_hz: int
+    duty_permyriad: int
+    duration_ms: int
+
+
+@lru_cache(maxsize=1)
+def load_product_requirements() -> dict[str, Any]:
+    data = json.loads(DEFAULT_REQUIREMENTS_PATH.read_text(encoding="utf-8"))
+    target = data.get("target_mass", {})
+    acceptance = data.get("acceptance", {})
+    minimum = target.get("minimum_mg")
+    maximum = target.get("maximum_mg")
+    if not isinstance(minimum, int) or not isinstance(maximum, int) or minimum >= maximum:
+        raise ValueError("product target_mass limits must be increasing integers")
+    if target.get("integer_only") is not True:
+        raise ValueError("this product requires integer target masses")
+    for key in ("minimum_offset_mg", "maximum_offset_mg"):
+        if not isinstance(acceptance.get(key), (int, float)):
+            raise ValueError(f"acceptance.{key} must be numeric")
+    return data
+
+
+def validate_target_mass(target_mg: Any) -> int:
+    """返回配置的 100-1000 mg 范围内的有效整数目标质量。"""
+    requirements = load_product_requirements()
+    limits = requirements["target_mass"]
+    if isinstance(target_mg, bool) or not isinstance(target_mg, int):
+        raise ValueError(
+            f"target_mg must be an integer between {limits['minimum_mg']} "
+            f"and {limits['maximum_mg']}"
+        )
+    if not limits["minimum_mg"] <= target_mg <= limits["maximum_mg"]:
+        raise ValueError(
+            f"target_mg must be between {limits['minimum_mg']} and "
+            f"{limits['maximum_mg']}, got {target_mg}"
+        )
+    return target_mg
+
+
+def acceptance_limits(target_mg: Any) -> tuple[float, float]:
+    """返回目标值 ±10 mg 的闭区间验收窗口。"""
+    target = validate_target_mass(target_mg)
+    acceptance = load_product_requirements()["acceptance"]
+    return (
+        target + float(acceptance["minimum_offset_mg"]),
+        target + float(acceptance["maximum_offset_mg"]),
+    )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_REQUIREMENTS_PATH = PROJECT_ROOT / "config" / "product_requirements.json"
+
+
+@dataclass(frozen=True)
+class MassMotionEstimatorSettings:
+    alpha: float = 0.45
+    beta: float = 0.10
+    gamma: float = 0.008
+    jerk_alpha: float = 0.20
+    min_dt_s: float = 0.05
+    max_dt_s: float = 1.0
+    min_valid_elapsed_s: float = 1.5
+    min_valid_samples: int = 5
+    max_rate_mg_s: float = 500.0
+    max_acceleration_mg_s2: float = 60.0
+    max_jerk_mg_s3: float = 120.0
+    prediction_horizon_s: float = 0.75
+
+    def __post_init__(self) -> None:
+        for name in ("alpha", "beta", "gamma", "jerk_alpha"):
+            value = getattr(self, name)
+            if not 0.0 < value <= 1.0:
+                raise ValueError(f"{name} must be in (0, 1]")
+        if not 0 < self.min_dt_s <= self.max_dt_s:
+            raise ValueError("estimator dt limits are invalid")
+        if self.min_valid_elapsed_s <= 0 or self.min_valid_samples < 2:
+            raise ValueError("estimator validity limits are invalid")
+        if min(
+            self.max_rate_mg_s,
+            self.max_acceleration_mg_s2,
+            self.max_jerk_mg_s3,
+            self.prediction_horizon_s,
+        ) <= 0:
+            raise ValueError("estimator bounds and prediction horizon must be positive")
+
+
+@dataclass(frozen=True)
+class MassMotionState:
+    timestamp_s: float
+    measured_mass_mg: float
+    filtered_mass_mg: float
+    rate_mg_s: float
+    acceleration_mg_s2: float
+    jerk_mg_s3: float
+    predicted_mass_mg: float
+    predicted_rate_mg_s: float
+    innovation_mg: float
+    sample_count: int
+    valid: bool
+
+
+class MassMotionEstimator:
+    """以可变采样周期估计质量、流量、加速度与加加速度。"""
+
+    def __init__(self, settings: MassMotionEstimatorSettings | None = None) -> None:
+        self.settings = settings or MassMotionEstimatorSettings()
+        self.reset()
+
+    def reset(self) -> None:
+        self._timestamp_s: float | None = None
+        self._started_at_s: float | None = None
+        self._mass_mg = 0.0
+        self._rate_mg_s = 0.0
+        self._acceleration_mg_s2 = 0.0
+        self._jerk_mg_s3 = 0.0
+        self._sample_count = 0
+
+    @staticmethod
+    def _bounded(value: float, lower: float, upper: float) -> float:
+        return min(upper, max(lower, value))
+
+    def update(self, timestamp_s: float, measured_mass_mg: float) -> MassMotionState:
+        if measured_mass_mg < 0:
+            raise ValueError("measured_mass_mg must be non-negative")
+        if self._timestamp_s is not None and timestamp_s <= self._timestamp_s:
+            raise ValueError("estimator timestamps must be strictly increasing")
+
+        settings = self.settings
+        if self._timestamp_s is None:
+            self._timestamp_s = timestamp_s
+            self._started_at_s = timestamp_s
+            self._mass_mg = measured_mass_mg
+            self._sample_count = 1
+            return self._state(measured_mass_mg, innovation_mg=0.0)
+
+        raw_dt = timestamp_s - self._timestamp_s
+        dt = self._bounded(raw_dt, settings.min_dt_s, settings.max_dt_s)
+        predicted_mass = (
+            self._mass_mg
+            + self._rate_mg_s * dt
+            + 0.5 * self._acceleration_mg_s2 * dt * dt
+        )
+        predicted_rate = self._rate_mg_s + self._acceleration_mg_s2 * dt
+        innovation = measured_mass_mg - predicted_mass
+
+        previous_acceleration = self._acceleration_mg_s2
+        self._mass_mg = max(0.0, predicted_mass + settings.alpha * innovation)
+        self._rate_mg_s = self._bounded(
+            predicted_rate + settings.beta * innovation / dt,
+            0.0,
+            settings.max_rate_mg_s,
+        )
+        self._acceleration_mg_s2 = self._bounded(
+            previous_acceleration + 2.0 * settings.gamma * innovation / (dt * dt),
+            -settings.max_acceleration_mg_s2,
+            settings.max_acceleration_mg_s2,
+        )
+        raw_jerk = (self._acceleration_mg_s2 - previous_acceleration) / dt
+        raw_jerk = self._bounded(
+            raw_jerk,
+            -settings.max_jerk_mg_s3,
+            settings.max_jerk_mg_s3,
+        )
+        self._jerk_mg_s3 = (
+            settings.jerk_alpha * raw_jerk
+            + (1.0 - settings.jerk_alpha) * self._jerk_mg_s3
+        )
+        self._timestamp_s = timestamp_s
+        self._sample_count += 1
+        return self._state(measured_mass_mg, innovation_mg=innovation)
+
+    def _state(self, measured_mass_mg: float, *, innovation_mg: float) -> MassMotionState:
+        assert self._timestamp_s is not None
+        assert self._started_at_s is not None
+        horizon = self.settings.prediction_horizon_s
+        predicted_mass = max(
+            self._mass_mg,
+            self._mass_mg
+            + self._rate_mg_s * horizon
+            + 0.5 * self._acceleration_mg_s2 * horizon * horizon,
+        )
+        predicted_rate = self._bounded(
+            self._rate_mg_s + self._acceleration_mg_s2 * horizon,
+            0.0,
+            self.settings.max_rate_mg_s,
+        )
+        valid = (
+            self._sample_count >= self.settings.min_valid_samples
+            and self._timestamp_s - self._started_at_s >= self.settings.min_valid_elapsed_s
+        )
+        return MassMotionState(
+            timestamp_s=self._timestamp_s,
+            measured_mass_mg=measured_mass_mg,
+            filtered_mass_mg=self._mass_mg,
+            rate_mg_s=self._rate_mg_s,
+            acceleration_mg_s2=self._acceleration_mg_s2,
+            jerk_mg_s3=self._jerk_mg_s3,
+            predicted_mass_mg=predicted_mass,
+            predicted_rate_mg_s=predicted_rate,
+            innovation_mg=innovation_mg,
+            sample_count=self._sample_count,
+            valid=valid,
+        )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_PROFILE_DIR = PROJECT_ROOT / "data" / "control_profiles"
+
+
+# ── 反馈种子（原 feedback_profiles.py）─────────────────────────────────────
+#
+# 这些值是运行时反馈控制器的软件种子。它们不是标定结果，
+# 只应依据已完成的稳定运行来更新。
+
+DISPENSE_PRESETS = {
+    "fast-80hz-p200": {
+        "frequency_hz": 80,
+        "duty_permyriad": 2000,
+        "window_position_units": 200,
+    },
+    "steady-65hz-p300": {
+        "frequency_hz": 65,
+        "duty_permyriad": 2000,
+        "window_position_units": 300,
+    },
+    "60hz-p150": {
+        "frequency_hz": 60,
+        "duty_permyriad": 2000,
+        "window_position_units": 150,
+    },
+    "60hz-p200": {
+        "frequency_hz": 60,
+        "duty_permyriad": 2000,
+        "window_position_units": 200,
+    },
+    "slow-60hz-p250": {
+        "frequency_hz": 60,
+        "duty_permyriad": 1600,
+        "window_position_units": 250,
+    },
+    "slow-40hz-p250": {
+        "frequency_hz": 40,
+        "duty_permyriad": 2000,
+        "window_position_units": 250,
+    },
+    "slow-10hz-p100": {
+        "frequency_hz": 10,
+        "duty_permyriad": 1000,
+        "window_position_units": 100,
+    },
+    "slow-15hz-p100": {
+        "frequency_hz": 15,
+        "duty_permyriad": 1000,
+        "window_position_units": 100,
+    },
+    "steady-70hz-p100": {
+        "frequency_hz": 70,
+        "duty_permyriad": 2000,
+        "window_position_units": 100,
+    },
+    "starch-70hz-p200": {
+        "frequency_hz": 70,
+        "duty_permyriad": 2000,
+        "window_position_units": 100,
+    },
+    "slow-70hz-p300": {
+        "frequency_hz": 70,
+        "duty_permyriad": 2000,
+        "window_position_units": 500,
+    },
+    "lubricant-1-80hz-p300": {
+        "frequency_hz": 80,
+        "duty_permyriad": 2000,
+        "window_position_units": 300,
+    },
+    "lubricant-1-80hz-p500": {
+        "frequency_hz": 80,
+        "duty_permyriad": 2000,
+        "window_position_units": 500,
+    },
+    "lubricant-1-70hz-p400": {
+        "frequency_hz": 70,
+        "duty_permyriad": 2000,
+        "window_position_units": 400,
+    },
+    "80hz-22pct-p350-water-loss-agent-2": {
+        "frequency_hz": 80,
+        "duty_permyriad": 2200,
+        "window_position_units": 250,
+    },
+    "80hz-22pct-p300-bentonite": {
+        "frequency_hz": 80,
+        "duty_permyriad": 2200,
+        "window_position_units": 300,
+    },
+    "80hz-22pct-p350-plugging-agent-1": {
+        "frequency_hz": 80,
+        "duty_permyriad": 2200,
+        "window_position_units": 350,
+    },
+    "80hz-22pct-p400-plugging-agent-1": {
+        "frequency_hz": 80,
+        "duty_permyriad": 2200,
+        "window_position_units": 400,
+    },
+    "80hz-22pct-p400-plugging-agent-2": {
+        "frequency_hz": 80,
+        "duty_permyriad": 2200,
+        "window_position_units": 250,
+    },
+}
+
+DISPENSE_TARGET_PROFILES = {
+    100: {
+        "coarse_rate_mg_s": 15.0,
+        "fine_rate_mg_s": 10.0,
+        "precision_rate_mg_s": 8.0,
+        "maximum_flow_rate_mg_s": 25.0,
+        "precision_start_remaining_mg": 35.0,
+        "tail_taper_start_remaining_mg": 45.0,
+        "tail_taper_end_remaining_mg": 6.0,
+    },
+    300: {
+        "coarse_rate_mg_s": 24.0,
+        "fine_rate_mg_s": 14.0,
+        "precision_rate_mg_s": 10.0,
+        "maximum_flow_rate_mg_s": 50.0,
+        "precision_start_remaining_mg": 55.0,
+        "tail_taper_start_remaining_mg": 85.0,
+        "tail_taper_end_remaining_mg": 10.0,
+    },
+    500: {
+        "coarse_rate_mg_s": 30.0,
+        "fine_rate_mg_s": 14.0,
+        "precision_rate_mg_s": 9.0,
+        "maximum_flow_rate_mg_s": 50.0,
+        "precision_start_remaining_mg": 50.0,
+        "tail_taper_start_remaining_mg": 100.0,
+        "tail_taper_end_remaining_mg": 10.0,
+    },
+}
+
+_ACCEPTANCE_REQUIREMENTS = load_product_requirements()["acceptance"]
+DISPENSE_ALLOWED_UNDERWEIGHT_MG = abs(
+    float(_ACCEPTANCE_REQUIREMENTS["minimum_offset_mg"])
+)
+DISPENSE_ALLOWED_OVERWEIGHT_MG = float(
+    _ACCEPTANCE_REQUIREMENTS["maximum_offset_mg"]
+)
+
+
+POWDER_CLASSIFICATION_PARAMS = {
+    "Low-flow": {
+        "preset_id": "steady-70hz-p100",
+        "maximum_flow_rate_mg_s": 80.0,
+        "fixed_tail_mass_mg": 5.0,
+        "force_stop_offset_mg": 10.0,
+        "duty_step_per_update": 50,
+        "emergency_duty_step_per_update": 200,
+        "position_feedback_enabled": False,
+    },
+    "Medium-flow": {
+        "preset_id": "60hz-p150",
+        "maximum_flow_rate_mg_s": 120.0,
+        "fixed_tail_mass_mg": 2.0,
+        "force_stop_offset_mg": 10.0,
+        "duty_step_per_update": 30,
+        "emergency_duty_step_per_update": 80,
+        "position_feedback_enabled": False,
+        "profile_overrides": {
+            100: {
+                "coarse_rate_mg_s": 25.0,
+                "fine_rate_mg_s": 15.0,
+                "precision_start_remaining_mg": 40.0,
+                "tail_taper_start_remaining_mg": 70.0,
+                "tail_taper_end_remaining_mg": 15.0,
+            },
+        },
+    },
+    "High-flow": {
+        "preset_id": "slow-10hz-p100",
+        "maximum_flow_rate_mg_s": 200.0,
+        "fixed_tail_mass_mg": 0.0,
+        "force_stop_offset_mg": 15.0,
+        # 高流量：激进制动，开启窗口反馈（占空比立即触底）
+        "duty_step_per_update": 100,
+        "emergency_duty_step_per_update": 400,
+        "position_feedback_enabled": True,
+        "profile_overrides": {
+            100: {
+                "precision_start_remaining_mg": 40.0,
+                "tail_taper_start_remaining_mg": 55.0,
+                "tail_taper_end_remaining_mg": 12.0,
+            },
+            300: {
+                "precision_start_remaining_mg": 80.0,
+                "tail_taper_start_remaining_mg": 120.0,
+                "tail_taper_end_remaining_mg": 15.0,
+            },
+            500: {
+                "precision_start_remaining_mg": 80.0,
+                "tail_taper_start_remaining_mg": 150.0,
+                "tail_taper_end_remaining_mg": 20.0,
+            },
+        },
+    },
+}
+
+# 当 unstable 标签生效时，在分类参数之上额外应用的覆盖项
+UNSTABLE_TAG_OVERRIDES = {
+    "settle_confirmations_delta": +1,
+    "dead_zone_multiplier": 1.5,
+}
+
+# 当 sticky 标签生效时，将预设提升一档
+STICKY_PRESET_BUMP = {
+    "slow-10hz-p100": "slow-40hz-p250",
+    "slow-40hz-p250": "slow-60hz-p250",
+    "slow-60hz-p250": "60hz-p150",
+    "60hz-p150": "60hz-p200",
+    "60hz-p200": "steady-65hz-p300",
+    "steady-65hz-p300": "steady-70hz-p100",
+    "steady-70hz-p100": "slow-70hz-p300",
+    "slow-70hz-p300": "fast-80hz-p200",
+    "fast-80hz-p200": "fast-80hz-p200",  # 已处于最高档，不再提升
+}
+
+
+def powder_classification_params(category: str, tags: list[str] | None = None):
+    """返回给定粉体分类对应的参数覆盖项。
+
+    Args:
+        category: "Low-flow"、"Medium-flow"、"High-flow" 之一。
+        tags: 可选的标签列表，如 ["stable"]、["unstable"]、["sticky"]。
+
+    Returns:
+        包含 preset_id、maximum_flow_rate_mg_s、fixed_tail_mass_mg 的 dict，
+        还可能包含 settle_confirmations_delta、dead_zone_multiplier。
+    """
+    if category not in POWDER_CLASSIFICATION_PARAMS:
+        raise ValueError(f"unknown powder category: {category}; choose Low-flow, Medium-flow, or High-flow")
+    tags = tags or []
+    params = dict(POWDER_CLASSIFICATION_PARAMS[category])
+
+    if "unstable" in tags:
+        params.update(UNSTABLE_TAG_OVERRIDES)
+    if "sticky" in tags:
+        params["preset_id"] = STICKY_PRESET_BUMP.get(params["preset_id"], params["preset_id"])
+
+    return params
+
+
+def dispense_plan(target_mg):
+    """返回受支持的整数目标质量及其反馈档位。"""
+    try:
+        target = int(target_mg)
+    except (TypeError, ValueError) as error:
+        raise ValueError("target_mg must be an integer") from error
+    if target not in DISPENSE_TARGET_PROFILES:
+        raise ValueError(f"unsupported dispense target: {target}; choose 100, 300, or 500 mg")
+    return target, DISPENSE_TARGET_PROFILES[target]
+
+
+# ── 任意质量的插值（反馈种子）───────────────────────────────────────
+
+# DISPENSE_TARGET_PROFILES 条目中可插值的标量字段。
+_INTERPOLATABLE_KEYS = (
+    "coarse_rate_mg_s",
+    "fine_rate_mg_s",
+    "precision_rate_mg_s",
+    "precision_start_remaining_mg",
+    "tail_taper_start_remaining_mg",
+    "tail_taper_end_remaining_mg",
+)
+
+# 各字段的截断边界（最小值, 最大值）。
+_INTERPOLATION_CLAMPS = {
+    "coarse_rate_mg_s": (5.0, 35.0),
+    "fine_rate_mg_s": (8.0, 30.0),
+    "precision_rate_mg_s": (5.0, 20.0),
+    "precision_start_remaining_mg": (10.0, None),
+    "tail_taper_start_remaining_mg": (15.0, None),
+    "tail_taper_end_remaining_mg": (3.0, None),
+}
+
+# 来自 DISPENSE_TARGET_PROFILES 的已排序锚点质量。
+_ANCHOR_MASSES = sorted(DISPENSE_TARGET_PROFILES.keys())
+
+
+def _linear_interpolate(target, anchors, values):
+    """在 *anchors* 之间对 *target* 处的 *values* 进行线性插值。
+
+    若 *target* 低于最小锚点，则使用第一对锚点的斜率向下外推；
+    若高于最大锚点，则使用最后一对锚点的斜率向上外推。
+    """
+    if target in anchors:
+        idx = anchors.index(target)
+        return values[idx]
+
+    if target < anchors[0]:
+        # 向下外推：使用 anchors[0] 与 anchors[1] 之间的斜率
+        slope = (values[1] - values[0]) / (anchors[1] - anchors[0])
+        return values[0] - slope * (anchors[0] - target)
+
+    if target > anchors[-1]:
+        # 向上外推：使用 anchors[-2] 与 anchors[-1] 之间的斜率
+        slope = (values[-1] - values[-2]) / (anchors[-1] - anchors[-2])
+        return values[-1] + slope * (target - anchors[-1])
+
+    # 区间内部插值
+    for i in range(len(anchors) - 1):
+        if anchors[i] <= target <= anchors[i + 1]:
+            frac = (target - anchors[i]) / (anchors[i + 1] - anchors[i])
+            return values[i] + (values[i + 1] - values[i]) * frac
+
+    raise RuntimeError(f"unexpected interpolation state for target={target}")  # 不可达
+
+
+def interpolate_profile(target_mg):
+    """返回 *target_mg*（100–1000）对应的反馈档位 dict。
+
+    ``DISPENSE_TARGET_PROFILES`` 中随目标变化的字段在
+    100 / 300 / 500 mg 锚点之间线性插值。
+    ``maximum_flow_rate_mg_s`` 不做插值——调用方必须
+    从粉体分类参数中提供该值。
+    """
+    target = validate_target_mass(target_mg)
+
+    profile = {}
+    for key in _INTERPOLATABLE_KEYS:
+        anchor_values = [DISPENSE_TARGET_PROFILES[m][key] for m in _ANCHOR_MASSES]
+        val = _linear_interpolate(target, _ANCHOR_MASSES, anchor_values)
+        lo, hi = _INTERPOLATION_CLAMPS.get(key, (None, None))
+        if lo is not None:
+            val = max(lo, val)
+        if hi is not None:
+            val = min(hi, val)
+        profile[key] = float(val)
+
+    # 保护：tail_taper_end 必须严格小于 tail_taper_start。
+    tts = profile["tail_taper_start_remaining_mg"]
+    tte = profile["tail_taper_end_remaining_mg"]
+    if tte >= tts:
+        profile["tail_taper_end_remaining_mg"] = tts * 0.3
+
+    # maximum_flow_rate_mg_s 不做插值。  在精确命中锚点时保留该锚点的
+    # 取值，使 interpolate_profile(anchor) 能完整复现锚点档位；
+    # 否则使用一个安全的默认值。
+    # 调用方（start_dispense）会根据粉体会话覆盖该值。
+    if target in DISPENSE_TARGET_PROFILES:
+        profile["maximum_flow_rate_mg_s"] = float(
+            DISPENSE_TARGET_PROFILES[target]["maximum_flow_rate_mg_s"]
+        )
+    else:
+        profile["maximum_flow_rate_mg_s"] = 50.0
+
+    return profile
+
+
+def validate_dispense_target(target_mg):
+    """若 *target_mg* 不是有效的出料目标则抛出 ValueError。"""
+    validate_target_mass(target_mg)
+
+
+# ── 运行时控制档位（原 control_profiles.py）─────────────────────────────────
+
+
+INTERPOLATABLE_TARGET_KEYS = (
+    "coarse_rate_mg_s",
+    "fine_rate_mg_s",
+    "precision_rate_mg_s",
+    "precision_start_remaining_mg",
+    "tail_taper_start_remaining_mg",
+    "tail_taper_end_remaining_mg",
+)
+
+STAGE_RATE_KEYS = (
+    "coarse_rate_mg_s",
+    "fine_rate_mg_s",
+    "precision_rate_mg_s",
+    "settle_rate_mg_s",
+)
+
+EXACT_TARGET_PROFILE_OVERRIDE_KEYS = (
+    "precision_start_remaining_mg",
+)
+
+EXACT_TARGET_CONTROLLER_OVERRIDE_KEYS = (
+    "fixed_tail_mass_mg",
+    "force_stop_offset_mg",
+    "tail_pulse_enabled",
+    "tail_pulse_start_remaining_mg",
+    "tail_pulse_hold_window_position_units",
+    "tail_pulse_initial_window_position_units",
+    "tail_pulse_max_window_position_units",
+    "tail_pulse_min_window_position_units",
+    "tail_pulse_window_step_units",
+    "tail_pulse_frequency_hz",
+    "tail_pulse_duty_permyriad",
+    "tail_pulse_initial_duration_s",
+    "tail_pulse_min_duration_s",
+    "tail_pulse_max_duration_s",
+    "tail_pulse_settle_timeout_s",
+    "tail_pulse_settle_minimum_wait_s",
+    "tail_pulse_settle_continuous_stable_s",
+    "tail_pulse_settle_max_spread_mg",
+    "tail_pulse_min_gain_mg",
+    "tail_pulse_max_attempts",
+    "tail_pulse_max_no_gain_attempts",
+    "tail_pulse_safety_guard_gain_mg",
+    "tail_pulse_safety_guard_multiplier",
+    "tail_pulse_micro_initial_window_position_units",
+    "tail_pulse_micro_max_window_position_units",
+    "tail_pulse_micro_window_step_units",
+    "tail_pulse_micro_initial_duration_s",
+    "tail_pulse_micro_min_duration_s",
+    "tail_pulse_micro_max_duration_s",
+    "tail_pulse_micro_max_attempts",
+    "tail_pulse_micro_safe_stop_min_mass_mg",
+    "tail_pulse_micro_max_no_gain_attempts",
+)
+
+
+def normalize_target_keys(raw_profiles: dict[Any, Any]) -> dict[int, dict[str, Any]]:
+    """规范化 JSON 字符串形式的质量键，不要求档位内容完整。"""
+    if not isinstance(raw_profiles, dict):
+        raise ValueError("target profiles must be an object")
+    normalized: dict[int, dict[str, Any]] = {}
+    for raw_mass, raw_values in raw_profiles.items():
+        try:
+            mass = int(raw_mass)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid target profile key: {raw_mass!r}") from error
+        if str(mass) != str(raw_mass) and raw_mass != mass:
+            raise ValueError(f"target profile key must be an integer mass: {raw_mass!r}")
+        if mass <= 0 or not isinstance(raw_values, dict):
+            raise ValueError(f"invalid target profile at {raw_mass!r}")
+        normalized[mass] = dict(raw_values)
+    return dict(sorted(normalized.items()))
+
+
+def normalize_target_profiles(raw_profiles: dict[Any, Any]) -> dict[int, dict[str, float]]:
+    """规范化目标键并校验完整的插值锚点。"""
+    if not isinstance(raw_profiles, dict) or len(raw_profiles) < 2:
+        raise ValueError("target_profiles must contain at least two mass anchors")
+    normalized: dict[int, dict[str, float]] = {}
+    for mass, raw_values in normalize_target_keys(raw_profiles).items():
+        values: dict[str, float] = {}
+        for key in INTERPOLATABLE_TARGET_KEYS:
+            value = raw_values.get(key)
+            if not isinstance(value, (int, float)):
+                raise ValueError(f"target {mass} is missing numeric {key}")
+            values[key] = float(value)
+        normalized[mass] = values
+    return dict(sorted(normalized.items()))
+
+
+def normalize_target_rate_bands(raw_bands: Any) -> list[dict[str, Any]]:
+    """校验可选的、按整数目标区间划分的分段阶段速率策略。"""
+    if raw_bands in (None, []):
+        return []
+    if not isinstance(raw_bands, list):
+        raise ValueError("target_rate_bands must be an array")
+    normalized: list[dict[str, Any]] = []
+    for index, raw_band in enumerate(raw_bands):
+        if not isinstance(raw_band, dict):
+            raise ValueError(f"target rate band {index} must be an object")
+        minimum = validate_target_mass(raw_band.get("minimum_target_mg"))
+        maximum = validate_target_mass(raw_band.get("maximum_target_mg"))
+        if minimum > maximum:
+            raise ValueError(f"target rate band {index} has an inverted range")
+        band: dict[str, Any] = {
+            "minimum_target_mg": minimum,
+            "maximum_target_mg": maximum,
+        }
+        for key in STAGE_RATE_KEYS:
+            value = raw_band.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"target rate band {index} is missing numeric {key}")
+            if key == "settle_rate_mg_s":
+                if float(value) != 0.0:
+                    raise ValueError("settle_rate_mg_s must be zero")
+            elif float(value) <= 0.0:
+                raise ValueError(f"target rate band {index} has non-positive {key}")
+            band[key] = float(value)
+        normalized.append(band)
+    normalized.sort(key=lambda band: band["minimum_target_mg"])
+    for previous, current in zip(normalized, normalized[1:]):
+        if current["minimum_target_mg"] <= previous["maximum_target_mg"]:
+            raise ValueError("target rate bands must not overlap")
+    return normalized
+
+
+def normalize_exact_target_overrides(raw_overrides: Any) -> dict[int, dict[str, Any]]:
+    """校验仅作用于某个精确目标的非插值覆盖项。"""
+    if raw_overrides in (None, {}):
+        return {}
+    allowed_keys = set(EXACT_TARGET_PROFILE_OVERRIDE_KEYS) | set(
+        EXACT_TARGET_CONTROLLER_OVERRIDE_KEYS
+    )
+    normalized: dict[int, dict[str, Any]] = {}
+    for mass, raw_values in normalize_target_keys(raw_overrides).items():
+        validate_target_mass(mass)
+        unknown_keys = set(raw_values) - allowed_keys
+        if unknown_keys:
+            raise ValueError(
+                f"target {mass} has unsupported exact overrides: "
+                + ", ".join(sorted(unknown_keys))
+            )
+        values: dict[str, Any] = {}
+        for key, value in raw_values.items():
+            if key == "tail_pulse_enabled":
+                if not isinstance(value, bool):
+                    raise ValueError(f"target {mass} has non-boolean exact override {key}")
+                values[key] = value
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"target {mass} has non-numeric exact override {key}")
+            if float(value) <= 0:
+                raise ValueError(f"target {mass} has non-positive exact override {key}")
+            values[key] = float(value)
+        normalized[mass] = values
+    return dict(sorted(normalized.items()))
+
+
+def resolve_target_rate_band(raw_bands: Any, target_mg: Any) -> dict[str, Any] | None:
+    """返回包含该目标的唯一已配置阶段速率区间。"""
+    target = validate_target_mass(target_mg)
+    matches = [
+        band
+        for band in normalize_target_rate_bands(raw_bands)
+        if band["minimum_target_mg"] <= target <= band["maximum_target_mg"]
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError(f"multiple target rate bands match {target} mg")
+    return dict(matches[0])
+
+
+def resolve_default_target_rate_band(target_mg: Any) -> dict[str, Any]:
+    """解析产品级的速率策略，在粉体覆盖之前使用。"""
+    bands = load_product_requirements().get("default_target_rate_bands", [])
+    resolved = resolve_target_rate_band(bands, target_mg)
+    if resolved is None:
+        raise ValueError(f"no default target rate band covers {target_mg} mg")
+    return resolved
+
+
+def _piecewise_linear(target: int, anchors: list[int], values: list[float]) -> float:
+    if target in anchors:
+        return values[anchors.index(target)]
+    if target < anchors[0]:
+        left, right = 0, 1
+    elif target > anchors[-1]:
+        left, right = len(anchors) - 2, len(anchors) - 1
+    else:
+        for left in range(len(anchors) - 1):
+            right = left + 1
+            if anchors[left] < target < anchors[right]:
+                break
+    fraction = (target - anchors[left]) / (anchors[right] - anchors[left])
+    return values[left] + fraction * (values[right] - values[left])
+
+
+def resolve_target_profile(raw_profiles: dict[Any, Any], target_mg: Any) -> dict[str, Any]:
+    """解析一个目标质量，并报告其命中方式（精确/插值/外推）。"""
+    target = validate_target_mass(target_mg)
+    profiles = normalize_target_profiles(raw_profiles)
+    anchors = sorted(profiles)
+    if target < anchors[0] or target > anchors[-1]:
+        resolution = "extrapolated"
+    elif target in profiles:
+        resolution = "exact"
+    else:
+        resolution = "interpolated"
+    values = {
+        key: float(_piecewise_linear(target, anchors, [profiles[m][key] for m in anchors]))
+        for key in INTERPOLATABLE_TARGET_KEYS
+    }
+    if values["tail_taper_end_remaining_mg"] >= values["tail_taper_start_remaining_mg"]:
+        values["tail_taper_end_remaining_mg"] = (
+            values["tail_taper_start_remaining_mg"] * 0.3
+        )
+    return {
+        "target_mg": target,
+        "resolution": resolution,
+        "anchor_masses_mg": anchors,
+        "profile": values,
+    }
+
+
+def resolve_partial_target_overrides(
+    raw_profiles: dict[Any, Any], target_mg: Any
+) -> dict[str, float]:
+    """对旧版部分覆盖项中出现的每个数值字段进行插值。"""
+    target = validate_target_mass(target_mg)
+    profiles = normalize_target_keys(raw_profiles)
+    result: dict[str, float] = {}
+    keys = {
+        key
+        for values in profiles.values()
+        for key, value in values.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+    for key in keys:
+        anchors = [mass for mass, values in profiles.items() if key in values]
+        values = [float(profiles[mass][key]) for mass in anchors]
+        if len(anchors) == 1:
+            result[key] = values[0]
+        elif anchors:
+            result[key] = float(_piecewise_linear(target, anchors, values))
+    return result
+
+
+def validate_control_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    required = ("powder_id", "powder_name", "status", "recommended_preset_id")
+    for key in required:
+        if not isinstance(profile.get(key), str) or not profile[key].strip():
+            raise ValueError(f"control profile is missing {key}")
+    controller = profile.get("recommended_controller")
+    if not isinstance(controller, dict):
+        raise ValueError("control profile is missing recommended_controller")
+    normalize_target_profiles(profile.get("target_profiles", {}))
+    normalize_target_rate_bands(profile.get("target_rate_bands", []))
+    normalize_exact_target_overrides(profile.get("exact_target_overrides", {}))
+    return profile
+
+
+def load_control_profile(
+    powder_id: str,
+    profile_dir: Path | str = DEFAULT_PROFILE_DIR,
+) -> dict[str, Any] | None:
+    if not powder_id or Path(powder_id).name != powder_id:
+        return None
+    path = Path(profile_dir) / f"{powder_id}.json"
+    if not path.exists():
+        return None
+    return validate_control_profile(json.loads(path.read_text(encoding="utf-8")))
+
+
+def list_control_profiles(
+    profile_dir: Path | str = DEFAULT_PROFILE_DIR,
+) -> list[dict[str, Any]]:
+    directory = Path(profile_dir)
+    if not directory.exists():
+        return []
+    summaries = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            profile = validate_control_profile(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        summaries.append({
+            "powder_id": profile["powder_id"],
+            "powder_name": profile["powder_name"],
+            "status": profile["status"],
+            "recommended_preset_id": profile["recommended_preset_id"],
+            "anchor_masses_mg": sorted(normalize_target_profiles(profile["target_profiles"])),
+            "generation_warnings": profile.get("generation_warnings", []),
+        })
+    return summaries
+
+
+def resolve_control_profile(profile: dict[str, Any], target_mg: Any) -> dict[str, Any]:
+    validate_control_profile(profile)
+    resolved = resolve_target_profile(profile["target_profiles"], target_mg)
+    rate_band = resolve_target_rate_band(profile.get("target_rate_bands", []), target_mg)
+    rate_band_source = "powder_profile"
+    if rate_band is None:
+        rate_band = resolve_default_target_rate_band(target_mg)
+        rate_band_source = "product_default"
+    target_profile = dict(resolved["profile"])
+    if rate_band is not None:
+        for key in STAGE_RATE_KEYS:
+            if key != "settle_rate_mg_s":
+                target_profile[key] = rate_band[key]
+    recommended_controller = dict(profile["recommended_controller"])
+    exact_target_overrides = normalize_exact_target_overrides(
+        profile.get("exact_target_overrides", {})
+    ).get(resolved["target_mg"], {})
+    for key, value in exact_target_overrides.items():
+        if key in EXACT_TARGET_PROFILE_OVERRIDE_KEYS:
+            target_profile[key] = value
+        elif key in EXACT_TARGET_CONTROLLER_OVERRIDE_KEYS:
+            recommended_controller[key] = value
+    return {
+        "powder_id": profile["powder_id"],
+        "powder_name": profile["powder_name"],
+        "status": profile["status"],
+        "recommended_preset_id": profile["recommended_preset_id"],
+        "recommended_controller": recommended_controller,
+        "target_resolution": {
+            key: value for key, value in resolved.items() if key != "profile"
+        },
+        "target_profile": target_profile,
+        "exact_target_overrides": dict(exact_target_overrides),
+        "target_rate_band": rate_band,
+        "target_rate_band_source": rate_band_source,
+        "generation_warnings": list(profile.get("generation_warnings", [])),
+    }
+
+
+# ── 草稿生成（原 method_generator.py）────────────────────────────────────────
+
+
+def build_candidate_control_profile(workspace: dict[str, Any]) -> dict[str, Any]:
+    """构建草稿；实测数据缺失时生成告警，绝不静默使用默认值。"""
+    powder_id = str(workspace.get("powder_id", "")).strip()
+    powder_name = str(workspace.get("powder_name", "")).strip()
+    if not powder_id or not powder_name:
+        raise ValueError("workspace must contain powder_id and powder_name")
+    profiles = normalize_target_profiles(workspace.get("recommended_profiles", {}))
+    target_rate_bands = normalize_target_rate_bands(
+        workspace.get("target_rate_bands", [])
+    )
+    controller = workspace.get("recommended_controller")
+    if not isinstance(controller, dict):
+        raise ValueError("workspace must contain recommended_controller")
+
+    warnings: list[str] = []
+    scan_grid = workspace.get("scan_grid", [])
+    pending_count = sum(1 for point in scan_grid if point.get("status") == "pending")
+    if pending_count:
+        warnings.append(f"{pending_count} scan points are still pending")
+    for region_name in ("safe_coarse_region", "safe_fine_region"):
+        region = workspace.get(region_name, {})
+        if region.get("confidence") in (None, "low"):
+            warnings.append(f"{region_name} has low or unspecified confidence")
+    if not workspace.get("path_dependency", {}).get("notes"):
+        warnings.append("transition/path-dependency evidence is missing")
+    tail = workspace.get("tail_behavior", {})
+    if not isinstance(tail.get("mean_tail_mg"), (int, float)):
+        warnings.append("measured stop-tail evidence is missing")
+
+    return {
+        "schema_version": 1,
+        "powder_id": powder_id,
+        "powder_name": powder_name,
+        "status": "draft",
+        "recommended_preset_id": workspace.get("recommended_preset_id", ""),
+        "recommended_controller": dict(controller),
+        "target_profiles": {str(mass): values for mass, values in profiles.items()},
+        "target_rate_bands": target_rate_bands,
+        "generation_warnings": warnings,
+        "source_workspace_updated_at": workspace.get("updated_at"),
+    }
 
 
 class FeedbackStage(str, Enum):
@@ -22,7 +989,7 @@ class FeedbackStage(str, Enum):
 
 @dataclass(frozen=True)
 class FeedbackInitialParameters:
-    """The run-specific seed, normally selected by L0/ILC or an operator."""
+    """针对本次运行的种子，通常由 L0/ILC 或操作员选定。"""
 
     frequency_hz: int
     duty_permyriad: int
@@ -31,7 +998,7 @@ class FeedbackInitialParameters:
 
 @dataclass(frozen=True)
 class FeedbackObservation:
-    """One live observation from the balance and motion estimator."""
+    """来自天平与运动估计器的一次实时观测。"""
 
     mass_mg: float
     predicted_mass_mg: float
@@ -44,7 +1011,7 @@ class FeedbackObservation:
 
 @dataclass(frozen=True)
 class FeedbackControllerSettings:
-    """Conservative defaults; tune these from recorded runs, not in hardware code."""
+    """保守的默认值；应根据记录的运行数据调优，而不是在硬件代码中调整。"""
 
     low_target_limit_mg: float = 100.0
     high_target_limit_mg: float = 200.0
@@ -95,20 +1062,20 @@ class FeedbackControllerSettings:
     tail_taper_end_remaining_mg: float = 10.0
     tail_duty_reduction_permyriad: int = 200
     tail_window_reduction_units: int = 50
-    # ── Hard stop / continue boundaries ──
+    # ── 强制停止 / 继续边界 ──
     force_stop_max_mass_mg: float = float("inf")
     force_continue_min_mass_mg: float = 0.0
     stall_rate_threshold_mg_s: float = 1.0
     stall_duration_s: float = 3.0
-    # ── taper stall escape ──
+    # ── 尾段递减期堵料逃逸 ──
     taper_stall_timeout_s: float = 3.0
-    # ── light-powder flow hold / ineffective-duty rollback ──
+    # ── 轻质粉体流量保持 / 无效占空比回退 ──
     flow_hold_enabled: bool = False
     flow_hold_window_s: float = 4.0
     flow_hold_min_gain_mg: float = 5.0
     flow_response_check_s: float = 4.0
     flow_response_min_improvement_mg_s: float = 1.0
-    # ── temporary-window recovery for powders that bridge at a fixed opening ──
+    # ── 针对在固定开度处架桥粉体的临时窗口恢复 ──
     stall_recovery_enabled: bool = False
     stall_recovery_observation_window_s: float = 3.0
     stall_recovery_min_gain_mg: float = 2.0
@@ -156,10 +1123,10 @@ class FeedbackControllerSettings:
             raise ValueError("emergency duty interval must be positive and no slower than the normal interval")
         if min(self.allowed_underweight_mg, self.allowed_overweight_mg) < 0:
             raise ValueError("acceptance tolerances must be non-negative")
-        # The precision reserve is a mass amount, not a target-size fraction.
-        # Large (1–10 g) runs deliberately reserve their final 500 mg for the
-        # same closed-loop precision stage, so it may exceed the legacy 200 mg
-        # high-target threshold.
+        # 精密段预留量是一个质量值，而不是目标规模的比例。
+        # 大剂量（1–10 g）运行刻意将其最后 500 mg 预留给同一个
+        # 闭环精密阶段，因此该值可以超过旧版 200 mg
+        # 高目标阈值。
         if self.precision_start_remaining_mg <= 0:
             raise ValueError("precision_start_remaining_mg is invalid")
         if self.stop_prediction_horizon_s <= 0 or self.fixed_tail_mass_mg < 0:
@@ -252,11 +1219,11 @@ class FeedbackDecision:
 
 
 class ContinuousFeedbackController:
-    """Two-loop controller: fast duty trim and slow window-position trim.
+    """双环控制器：快速占空比微调与慢速窗口位置微调。
 
-    The frequency in :class:`FeedbackInitialParameters` is intentionally
-    immutable. The caller owns physical writes and may reject a decision if a
-    device interlock or state-machine rule is not satisfied.
+    :class:`FeedbackInitialParameters` 中的频率有意保持不可变。
+    物理写入由调用方负责，若不满足设备联锁或状态机规则，
+    调用方可以拒绝某条决策。
     """
 
     def __init__(
@@ -416,7 +1383,7 @@ class ContinuousFeedbackController:
                 stop_confirmation_required=1,
             )
 
-        # ── force stop: mass already exceeds the hard upper bound ──
+        # ── 强制停止：质量已超过硬性上限 ──
         if observation.valid and observation.mass_mg >= settings.force_stop_max_mass_mg:
             return self._decision(
                 FeedbackStage.SETTLE,
@@ -446,7 +1413,7 @@ class ContinuousFeedbackController:
         if stall_recovery_decision is not None:
             return stall_recovery_decision
 
-        # ── stall detection: rate dead while still below the continue threshold ──
+        # ── 堵料检测：流量为零且仍低于继续阈值 ──
         if (
             observation.valid
             and observation.mass_mg < settings.force_continue_min_mass_mg
@@ -551,9 +1518,9 @@ class ContinuousFeedbackController:
                     projected_stop_mass_mg=projected_stop_mass,
                 )
 
-        # A fixed-duty pre-feed deliberately runs open-loop.  It still uses
-        # the balance for safety/stop checks, but must not be rate-limited or
-        # classified as overspeed until precision closed-loop takes over.
+        # 固定占空比预投料有意以开环方式运行。  它仍会使用天平做
+        # 安全/停止检查，但在精密闭环接管之前，不得对其限速
+        # 或判定为超速。
         error = 0.0 if bypass_rate_control else target_rate - control_rate
         if dt > 0:
             self._integral_error_mg = max(-20.0, min(20.0, self._integral_error_mg + error * dt))
@@ -653,9 +1620,9 @@ class ContinuousFeedbackController:
 
         taper_progress = self._tail_taper_progress(projected_mass)
         if taper_progress > 0:
-            # Only skip the taper ceiling after a sustained stall inside the
-            # taper band.  This lets the PI loop push duty higher to break
-            # through bridging, then re-engages as soon as flow resumes.
+            # 只有在递减带内发生持续堵料后才跳过递减上限。
+            # 这让 PI 环得以推高占空比以冲破架桥，一旦流量恢复
+            # 即重新生效。
             skip_ceiling = False
             if control_rate < settings.stall_rate_threshold_mg_s:
                 if self._taper_stall_start_s is None:
@@ -678,8 +1645,8 @@ class ContinuousFeedbackController:
                     )
                     reason += "; remaining mass is small, taper duty for loose-powder tail feed"
 
-        # The position loop is intentionally slower and only trims after a
-        # persistent rate error or when the duty loop reaches a hard limit.
+        # 位置环有意设计得更慢，只有在持续出现速率误差
+        # 或占空比环达到硬性极限时才进行微调。
         position_due = self._last_position_update_s is None or now - self._last_position_update_s >= self.settings.position_update_interval_s
         persistent_error = max(self._under_rate_samples, self._over_rate_samples) >= self.settings.position_persistence_samples
         duty_at_limit = self.duty_permyriad in (self.settings.min_duty_permyriad, self.settings.max_duty_permyriad)
@@ -830,7 +1797,7 @@ class ContinuousFeedbackController:
         estimated_tail_mg: float,
         projected_stop_mass_mg: float,
     ) -> FeedbackDecision | None:
-        """Temporarily open a bridged powder head, then return to its seed window."""
+        """临时开大发生架桥的粉体出口，随后恢复到种子窗口位置。"""
         settings = self.settings
         if not settings.stall_recovery_enabled:
             return None
@@ -896,9 +1863,9 @@ class ContinuousFeedbackController:
                     estimated_tail_mg=estimated_tail_mg,
                     projected_stop_mass_mg=projected_stop_mass_mg,
                 )
-                # Attempts are scoped to one continuous stall episode.  Once
-                # flow resumes, a later independent stall must receive a fresh
-                # recovery budget instead of inheriting exhausted attempts.
+                # 尝试次数限定于一次连续的堵料事件。  一旦流量恢复，
+                # 之后独立的堵料事件必须获得全新的恢复预算，
+                # 而不是继承已耗尽的尝试次数。
                 self._stall_recovery_attempts = 0
                 return decision
 
@@ -1069,7 +2036,7 @@ class ContinuousFeedbackController:
         return (settings.tail_taper_start_remaining_mg - remaining) / span
 
     def _stop_projection(self, observation: FeedbackObservation, control_rate_mg_s: float) -> tuple[float, float]:
-        """Project mass after command, balance and falling-powder delays."""
+        """预测计入指令、天平与粉体下落延迟之后的质量。"""
         settings = self.settings
         horizon = settings.stop_prediction_horizon_s
         positive_acceleration = max(0.0, observation.acceleration_mg_s2)
