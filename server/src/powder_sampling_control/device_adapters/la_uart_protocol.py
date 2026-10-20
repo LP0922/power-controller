@@ -280,7 +280,9 @@ class LAActuator:
             if header != b"\xAA\x55":
                 raise LAProtocolError(f"LA reply header mismatch: {header.hex(' ')}")
             length = self._read_exactly(port, 1)[0]
-            rest = self._read_exactly(port, length + 1)  # 帧长字节之后共 length+1 字节（含校验）
+            # 长度字节之后共 length+2 字节：ID(1) + 长度区(length) + 校验(1)。
+            # 长度字段统计 CMD+索引+数据（不含 ID 与校验），故须补 ID 与校验各 1 字节。
+            rest = self._read_exactly(port, length + 2)
             frame = header + bytes((length,)) + rest
             payload = frame[2:-1]
             if sum(payload) & 0xFF != frame[-1]:
