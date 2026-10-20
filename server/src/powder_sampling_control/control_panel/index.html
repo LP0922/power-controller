@@ -180,9 +180,46 @@
     </div>
   </section>
 
+  <!-- 振动给料：QLS3600S 信号发生器 -->
+  <section class="card wide" id="cardSig">
+    <h2>振动给料（信号发生器） <span class="tag">QLS3600S · COM16 · 57600</span></h2>
+    <div class="desc">OUT 输出驱动粉末站振动：幅度决定振动强度（≈喂粉速率），频率决定振动节拍。改动参数后需点「OUT 开」或「定时运行」才真正输出；定时到点自动关闭（异常/急停也保证关）。</div>
+    <div class="row">
+      <label>波形</label>
+      <button class="op wave" data-wave="sine">正弦波</button>
+      <button class="op wave" data-wave="square">方波</button>
+      <button class="op wave" data-wave="pulse">脉冲波</button>
+      <button class="op wave" data-wave="triangle">三角波</button>
+      <span class="tag">脉冲波 = 方波 + 占空比</span>
+    </div>
+    <div class="row">
+      <label>频率 Hz</label>
+      <input type="number" id="sigFreq" min="0.01" max="5000000" step="1" value="50">
+      <label style="min-width:auto">幅度 Vpp</label>
+      <input type="number" id="sigAmp" min="0.01" max="20" step="0.05" value="0.3">
+      <label style="min-width:auto">占空 %</label>
+      <input type="number" id="sigDuty" min="0.1" max="99.9" step="0.1" value="50">
+      <button class="op" id="btnSigApply">应用参数</button>
+    </div>
+    <div class="row">
+      <button class="op green" id="btnSigOn">OUT 开</button>
+      <button class="op" id="btnSigOff">OUT 关</button>
+      <label style="min-width:auto">定时</label>
+      <input type="number" id="sigSecs" min="1" max="600" step="1" value="5">
+      <span class="tag">秒</span>
+      <button class="op primary" id="btnSigRun">定时运行（先设参数再开）</button>
+      <button class="op gray" id="btnSigStop">停止振动</button>
+    </div>
+    <div class="status-grid">
+      <div class="stat"><div class="k">当前波形</div><div class="v" id="sigWave">–</div></div>
+      <div class="stat"><div class="k">频率 / 幅度</div><div class="v" id="sigFA">–</div></div>
+      <div class="stat"><div class="k">OUT 输出</div><div class="v" id="sigOut">–</div></div>
+      <div class="stat"><div class="k">定时剩余</div><div class="v" id="sigLeft">–</div></div>
+    </div>
+  </section>
+
   <div id="log"></div>
 </main>
-
 <script>
 const $ = id => document.getElementById(id);
 const logBox = $("log");
@@ -279,6 +316,49 @@ $("btnStirStopDecel").onclick = () => withBusy("cardStir",
 $("btnStirStopImm").onclick = () => withBusy("cardStir",
   () => api("/api/stir/stop", {mode: "immediate"}), "搅拌已立即停止");
 
+// ---------------- 振动给料（QLS3600S） ----------------
+let currentWave = "sine";
+function paintWaveButtons() {
+  document.querySelectorAll("button.wave").forEach(btn => {
+    const on = btn.dataset.wave === currentWave;
+    btn.classList.toggle("primary", on);
+  });
+}
+document.querySelectorAll("button.wave").forEach(btn => {
+  btn.onclick = () => withBusy("cardSig",
+    () => api("/api/sig/waveform", {waveform: btn.dataset.wave}),
+    () => {
+      currentWave = btn.dataset.wave;
+      paintWaveButtons();
+      return `波形已切换为 ${btn.textContent}`;
+    });
+});
+paintWaveButtons();
+
+$("btnSigApply").onclick = () => withBusy("cardSig", async () => {
+  const freq = +$("sigFreq").value, amp = +$("sigAmp").value, duty = +$("sigDuty").value;
+  await api("/api/sig/freq", {hz: freq});     // 频率
+  await api("/api/sig/amp", {vpp: amp});      // 幅度
+  await api("/api/sig/duty", {percent: duty}); // 占空（仅方波/脉冲有效）
+  return {freq, amp, duty};
+}, r => `参数已应用：${r.freq} Hz / ${r.amp} Vpp / 占空 ${r.duty}%（输出状态不变）`);
+
+$("btnSigOn").onclick = () => withBusy("cardSig",
+  () => api("/api/sig/output", {on: true}), "OUT 输出已开启（开始振动）");
+$("btnSigOff").onclick = () => withBusy("cardSig",
+  () => api("/api/sig/output", {on: false}), "OUT 输出已关闭");
+$("btnSigStop").onclick = () => withBusy("cardSig",
+  () => api("/api/sig/stop", {}), "振动已停止（定时任务同时取消）");
+$("btnSigRun").onclick = () => withBusy("cardSig", () => {
+  const seconds = +$("sigSecs").value;
+  return api("/api/sig/run", {
+    seconds,
+    frequency_hz: +$("sigFreq").value,
+    amplitude_vpp: +$("sigAmp").value,
+    waveform: currentWave,
+  });
+}, r => `振动已启动：${r.waveform_name || ""} ${r.freq}Hz ${r.amp}Vpp，运行 ${r.requested_s}s 后自动关闭`);
+
 // ---------------- 全局急停 ----------------
 $("btnEstop").onclick = async () => {
   try {
@@ -330,6 +410,16 @@ function render(s) {
     $("stirErr").textContent = err ? (err & 1 ? "堵转 " : "") + (err & 2 ? "堵转保护" : "") : "无";
     $("stirErr").className = "v " + (err ? "moving" : "stopped");
   }
+  if (s.sig) {
+    $("sigWave").textContent = s.sig.waveform_name || "未设置";
+    $("sigFA").textContent = (s.sig.freq === null ? "–" : s.sig.freq) + " Hz / " +
+      (s.sig.amp === null ? "–" : s.sig.amp) + " Vpp";
+    const sigOn = s.sig.output === true;
+    $("sigOut").textContent = s.sig.output === null ? "未设置" : (sigOn ? "输出中" : "关闭");
+    $("sigOut").className = "v " + (s.sig.output === null ? "" : (sigOn ? "moving" : "stopped"));
+    $("sigLeft").textContent = s.sig.remaining === null ? "–" : `${s.sig.remaining}s`;
+    $("sigLeft").className = "v " + (s.sig.remaining ? "moving" : "");
+  }
 }
 async function poll() {
   try { render(await api("/api/status")); }
@@ -337,7 +427,7 @@ async function poll() {
 }
 setInterval(poll, 500);
 poll();
-log("页面就绪。升降与推杆共用 COM10 总线，搅拌走 COM9。");
+log("页面就绪。升降与推杆共用 COM10 总线，搅拌走 COM9，振动给料走 COM16。");
 log("安全提示：页面动作均为真实硬件动作，请确认机构周围无人后操作。");
 </script>
 </body>

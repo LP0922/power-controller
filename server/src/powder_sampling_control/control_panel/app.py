@@ -32,6 +32,8 @@ from powder_sampling_control.device_adapters import (
     LAConfig,
     MD30DualLift,
     MD30SyncGuardError,
+    QLS3600Config,
+    QLS3600SignalGenerator,
     ZDTEmm42Private,
     Emm42PrivateConfig,
 )
@@ -42,6 +44,7 @@ from powder_sampling_control.device_adapters import (
 
 LIFT_PORT = "COM10"      # 双 MD30 升降 + LA 推杆 共享总线
 STIR_PORT = "COM9"       # ZDT 搅拌电机
+SIG_PORT = "COM16"       # QLS3600S 信号发生器（振动给料）
 LIFT_HOME_RAW = 33       # 升降原位（实测收拢位 32/33）
 ROD_HOME = 208           # 推杆原位（实测起点）
 # 升降速度固定为 10（用户要求：慢速给看门狗留足轮询反应时间，页面不可调）。
@@ -57,13 +60,16 @@ class ActuatorHub:
     POLL_LOCK_TIMEOUT_S = 0.3   # 状态轮询：拿不到锁就跳过本轮，回缓存数据
     CTRL_LOCK_TIMEOUT_S = 3.0   # 控制指令：最多等 3s，拿不到就报错给页面
 
-    def __init__(self, lift_port: str, stir_port: str) -> None:
+    def __init__(self, lift_port: str, stir_port: str, sig_port: str = SIG_PORT) -> None:
         self.lift_port = lift_port
         self.stir_port = stir_port
+        self.sig_port = sig_port
         # COM10 共享总线锁：MD30（Modbus）与 LA（55AA 协议）事务互斥。
         self._bus10_lock = threading.Lock()
         # COM9 锁：ZDT 搅拌。
         self._bus9_lock = threading.Lock()
+        # COM16 锁：QLS3600 信号发生器（独立串口，无需共享）。
+        self._bus16_lock = threading.Lock()
         # 最近一次成功的状态缓存（轮询拿不到锁时返回它，页面不会断流）。
         self._last_status: dict = {"lift": None, "rod": None, "stir": None}
         # 共享串口句柄惰性创建：设备掉线/重插后自动重开，服务进程不退出。
@@ -72,6 +78,9 @@ class ActuatorHub:
         self.sync_tolerance = MD30DualLift.SYNC_TOLERANCE_RAW
         self._sync_alarm: dict | None = None
         self._sync_alarm_lock = threading.Lock()
+        # 振动定时运行：后台线程到点关输出（不阻塞 HTTP）。
+        self._sig_cancel = threading.Event()
+        self._sig_deadline: float | None = None
 
         self.lift = MD30DualLift(port=lift_port, slave_addresses=(1, 2),
                                  default_speed=LIFT_SPEED_RAW,
@@ -79,6 +88,7 @@ class ActuatorHub:
         self.rod = LAActuator(LAConfig(port=lift_port, node_id=3),
                               serial_factory=lambda **kwargs: self._get_bus10())
         self.stir = ZDTEmm42Private(Emm42PrivateConfig(port=stir_port, slave_address=1))
+        self.sig = QLS3600SignalGenerator(QLS3600Config(port=sig_port))
 
     def _get_bus10(self):
         """获取 COM10 共享句柄；掉线后下次访问自动重开（USB 重插即恢复）。"""
@@ -130,6 +140,19 @@ class ActuatorHub:
             yield
         finally:
             self._bus9_lock.release()
+
+    @contextmanager
+    def _bus16(self, timeout_s: float):
+        """信号发生器总线：串口 I/O 出错时丢弃句柄，下条指令自动重连（USB 掉线自恢复）。"""
+        if not self._bus16_lock.acquire(timeout=timeout_s):
+            raise TimeoutError(f"{self.sig_port} 总线忙（等锁超时 {timeout_s}s）")
+        try:
+            yield
+        except OSError:
+            self.sig._serial = None
+            raise
+        finally:
+            self._bus16_lock.release()
 
     # ------------------------------------------------------------------
     # 状态轮询
@@ -226,6 +249,8 @@ class ActuatorHub:
         else:
             status["sync"] = {"dev": None, "tol": self.sync_tolerance,
                               "alarm": self._sync_alarm}
+        # 信号发生器：设备不回读设定值，只回缓存 + 定时剩余秒数（不发串口事务）。
+        status["sig"] = self.sig_snapshot()
         status["ok"] = not status["errors"] and self._sync_alarm is None
         return status
 
@@ -301,11 +326,142 @@ class ActuatorHub:
         return {"mode": mode}
 
     # ------------------------------------------------------------------
+    # 振动给料（QLS3600S 信号发生器）
+    # ------------------------------------------------------------------
+
+    def sig_snapshot(self) -> dict:
+        """信号发生器状态快照：设定值取驱动缓存，定时剩余由本类计算。"""
+        state = self.sig.state
+        remaining = None
+        if self._sig_deadline is not None:
+            remaining = max(0.0, round(self._sig_deadline - time.monotonic(), 1))
+        # 方波 + 非 50% 占空比 = 脉冲波（设备无独立脉冲编号），显示上标出来。
+        display_name = state.waveform_name
+        if state.waveform == 1 and state.duty_percent is not None:
+            display_name = f"脉冲波 {state.duty_percent}%"
+        return {
+            "online": self.sig.connected,
+            "waveform": state.waveform,
+            "waveform_name": display_name,
+            "freq": state.frequency_hz,
+            "amp": state.amplitude_vpp,
+            "duty": state.duty_percent,
+            "offset": state.offset_v,
+            "output": state.output_on,
+            "remaining": remaining,
+        }
+
+    def _apply_waveform(self, waveform: object) -> None:
+        """波形切换（调用方必须已持有 COM16 锁）。
+
+        支持编号（0..32）或名称（sine/square/triangle/pulse）；
+        ``pulse`` = 方波 + 当前占空比（设备没有独立的脉冲波形编号）。
+        """
+        if isinstance(waveform, str):
+            key = waveform.strip().lower()
+            if key == "pulse":
+                self.sig.set_pulse_wave(self.sig.state.duty_percent or 50.0)
+                return
+            mapping = {"sine": 0, "square": 1, "triangle": 2}
+            if key not in mapping:
+                raise ValueError(f"未知波形 {waveform!r}（可用 sine/square/triangle/pulse）")
+            self.sig.set_waveform(mapping[key])
+            return
+        self.sig.set_waveform(int(waveform))
+
+    def sig_set_waveform(self, waveform: object) -> dict:
+        with self._bus16(self.CTRL_LOCK_TIMEOUT_S):
+            self._apply_waveform(waveform)
+        return self.sig_snapshot()
+
+    def sig_set_frequency(self, hz: float) -> dict:
+        with self._bus16(self.CTRL_LOCK_TIMEOUT_S):
+            self.sig.set_frequency(float(hz))
+        return self.sig_snapshot()
+
+    def sig_set_amplitude(self, vpp: float) -> dict:
+        with self._bus16(self.CTRL_LOCK_TIMEOUT_S):
+            self.sig.set_amplitude(float(vpp))
+        return self.sig_snapshot()
+
+    def sig_set_duty(self, percent: float) -> dict:
+        with self._bus16(self.CTRL_LOCK_TIMEOUT_S):
+            self.sig.set_duty(float(percent))
+        return self.sig_snapshot()
+
+    def sig_output(self, on: bool) -> dict:
+        """OUT 输出开关（手动开/关，直接生效）。"""
+        if not on:
+            self._sig_cancel.set()          # 手动关输出同时取消定时任务
+            self._sig_deadline = None
+        with self._bus16(self.CTRL_LOCK_TIMEOUT_S):
+            self.sig.output(bool(on))
+        return self.sig_snapshot()
+
+    def sig_run(self, seconds: float, *, frequency_hz: float | None = None,
+                amplitude_vpp: float | None = None, waveform: object | None = None) -> dict:
+        """定时振动：按需设置参数后开 OUT，运行 seconds 秒自动关。
+
+        定时靠后台线程，接口立即返回；页面用状态轮询显示剩余时间。
+        """
+        seconds = float(seconds)
+        if not 0 < seconds <= 600:
+            raise ValueError("定时运行时长须在 0–600 秒")
+        self._sig_cancel.set()              # 取消上一轮定时
+        with self._bus16(self.CTRL_LOCK_TIMEOUT_S):
+            if waveform is not None:
+                self._apply_waveform(waveform)
+            if frequency_hz is not None:
+                self.sig.set_frequency(float(frequency_hz))
+            if amplitude_vpp is not None:
+                self.sig.set_amplitude(float(amplitude_vpp))
+            self.sig.output(True)
+        self._sig_cancel = threading.Event()   # 新一轮的取消标志
+        self._sig_deadline = time.monotonic() + seconds
+        threading.Thread(target=self._sig_run_worker, args=(seconds,), daemon=True).start()
+        snapshot = self.sig_snapshot()
+        snapshot["requested_s"] = seconds
+        return snapshot
+
+    def _sig_run_worker(self, seconds: float) -> None:
+        """定时结束关输出（含手动停止/异常路径）——关输出绝不会被跳过。"""
+        cancel = self._sig_cancel
+        end = time.monotonic() + seconds
+        while True:
+            left = end - time.monotonic()
+            if left <= 0 or cancel.wait(min(0.1, max(0.0, left))):
+                break
+        try:
+            with self._bus16(self.CTRL_LOCK_TIMEOUT_S):
+                self.sig.output(False)
+        except Exception:  # noqa: BLE001 - 定时关闭失败不能让线程崩
+            pass
+        finally:
+            if self._sig_cancel is cancel:
+                self._sig_deadline = None
+
+    def sig_stop(self) -> dict:
+        """停止振动：取消定时并立即关 OUT（页面「停止」按钮）。"""
+        self._sig_cancel.set()
+        self._sig_deadline = None
+        with self._bus16(self.CTRL_LOCK_TIMEOUT_S):
+            self.sig.output(False)
+        return self.sig_snapshot()
+
+    # ------------------------------------------------------------------
     # 全局急停
     # ------------------------------------------------------------------
 
     def emergency_stop_all(self) -> dict:
         # 急停路径：锁等待也设上限，绝不能让急停被卡住（急停优先于一切）。
+        # 信号发生器先关（振动源），再停运动机构。
+        try:
+            self._sig_cancel.set()
+            self._sig_deadline = None
+            with self._bus16(1.0):
+                self.sig.output(False)
+        except Exception:  # noqa: BLE001 - 急停尽力而为
+            pass
         try:
             with self._bus9(1.0):
                 self.stir.stop_immediate()
@@ -389,6 +545,17 @@ class ControlPageHandler(BaseHTTPRequestHandler):
             "/api/stir/stop": lambda body: HUB.stir_stop(
                 body.get("mode", "immediate"), body.get("acc", 200)),
             "/api/stir/enable": lambda body: HUB.stir_enable(bool(body.get("on", True))),
+            # ---- 振动给料（QLS3600S 信号发生器）----
+            "/api/sig/waveform": lambda body: HUB.sig_set_waveform(body["waveform"]),
+            "/api/sig/freq": lambda body: HUB.sig_set_frequency(body["hz"]),
+            "/api/sig/amp": lambda body: HUB.sig_set_amplitude(body["vpp"]),
+            "/api/sig/duty": lambda body: HUB.sig_set_duty(body["percent"]),
+            "/api/sig/output": lambda body: HUB.sig_output(bool(body.get("on", True))),
+            "/api/sig/run": lambda body: HUB.sig_run(
+                body["seconds"], frequency_hz=body.get("frequency_hz"),
+                amplitude_vpp=body.get("amplitude_vpp"),
+                waveform=body.get("waveform")),
+            "/api/sig/stop": lambda body: HUB.sig_stop(),
             "/api/estop": lambda body: HUB.emergency_stop_all(),
         }
         handler = routes.get(self.path)
@@ -409,11 +576,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="粉末加样执行机构实时控制页面")
     parser.add_argument("--lift-port", default=LIFT_PORT, help="双 MD30 升降 + LA 推杆 共享串口")
     parser.add_argument("--stir-port", default=STIR_PORT, help="ZDT 搅拌电机串口")
+    parser.add_argument("--sig-port", default=SIG_PORT, help="QLS3600S 信号发生器串口")
     parser.add_argument("--http-port", type=int, default=8765, help="HTTP 服务端口")
     args = parser.parse_args()
 
     # 按命令行参数创建设备聚合层（避免运行期改写 frozen dataclass）。
-    HUB = ActuatorHub(args.lift_port, args.stir_port)
+    HUB = ActuatorHub(args.lift_port, args.stir_port, args.sig_port)
 
     try:
         server = ControlServer(("127.0.0.1", args.http_port), ControlPageHandler)
@@ -424,6 +592,7 @@ def main() -> None:
     print(f"控制页面已启动: http://127.0.0.1:{args.http_port}/")
     print(f"  升降+推杆总线: {args.lift_port} (MD30 从站 1/2 + LA ID3)")
     print(f"  搅拌电机串口 : {args.stir_port} (ZDT 私有 0x6B)")
+    print(f"  信号发生器   : {args.sig_port} (QLS3600S 振动给料)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -433,6 +602,7 @@ def main() -> None:
         HUB.lift.close()
         HUB.rod.close()
         HUB.stir.close()
+        HUB.sig.close()
         server.server_close()
 
 
