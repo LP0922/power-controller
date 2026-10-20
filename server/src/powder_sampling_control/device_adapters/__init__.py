@@ -30,6 +30,14 @@ from .zdt_emm42_private import (
     ZDTEmm42Private,
 )
 from .qls5800_signal_gen import QLS5800Config, QLS5800SignalGenerator
+from .qls3600_signal_gen import (
+    QLS3600CommunicationError,
+    QLS3600Config,
+    QLS3600Error,
+    QLS3600ProtocolError,
+    QLS3600SignalGenerator,
+    QLS3600State,
+)
 from .la_uart_protocol import LAActuator, LAConfig, LAStatus
 from .feeder_actuator import FeederActuator, FeederActuatorConfig, FeederStatus
 
@@ -62,6 +70,12 @@ __all__ = [
     "ZDTEmm42Private",
     "QLS5800Config",
     "QLS5800SignalGenerator",
+    "QLS3600Config",
+    "QLS3600State",
+    "QLS3600SignalGenerator",
+    "QLS3600Error",
+    "QLS3600CommunicationError",
+    "QLS3600ProtocolError",
     "LAActuator",
     "LAConfig",
     "LAStatus",
