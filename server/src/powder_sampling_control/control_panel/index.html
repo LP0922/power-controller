@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>粉末加样 · 执行机构实时控制</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #ffffff; --text: #1f2d3d; --muted: #7a8ba3;
+    --line: #e3e9f1; --accent: #2563eb; --accent-2: #059669; --danger: #dc2626;
+    --warn: #d97706; --chip: #eef2f8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; font-size: 14px;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 22px; background: var(--card); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  .conn { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); }
+  .dot.on { background: var(--accent-2); }
+  .estop-btn {
+    background: var(--danger); color: #fff; border: none; border-radius: 8px;
+    padding: 10px 22px; font-size: 15px; font-weight: 700; cursor: pointer;
+  }
+  .estop-btn:active { transform: scale(0.97); }
+  main {
+    max-width: 1180px; margin: 18px auto; padding: 0 16px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px; grid-column: span 1;
+  }
+  .card.wide { grid-column: span 2; }
+  .card h2 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .tag { font-size: 11px; color: var(--muted); background: var(--chip); padding: 2px 8px; border-radius: 10px; font-weight: 400; }
+  .desc { color: var(--muted); font-size: 12px; margin: 2px 0 12px; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+  .row label { min-width: 68px; color: var(--muted); }
+  input[type="range"] { flex: 1; min-width: 140px; }
+  input[type="number"], select {
+    width: 90px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+    font-size: 14px; background: #fff; color: var(--text);
+  }
+  .val { min-width: 74px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  button.op {
+    border: 1px solid var(--line); background: #fff; color: var(--text);
+    border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 14px;
+  }
+  button.op.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.op.green { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+  button.op.gray { background: var(--chip); }
+  button.op:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+  .stat {
+    background: var(--chip); border-radius: 8px; padding: 8px 10px;
+  }
+  .stat .k { font-size: 11px; color: var(--muted); }
+  .stat .v { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .moving { color: var(--warn); }
+  .stopped { color: var(--accent-2); }
+  .busy { opacity: 0.6; pointer-events: none; }
+  #log {
+    grid-column: span 2; background: #0f172a; color: #cbd5e1; border-radius: 12px;
+    padding: 12px 14px; font-family: Consolas, monospace; font-size: 12px;
+    height: 150px; overflow-y: auto; white-space: pre-wrap;
+  }
+  .err { color: #f87171; }
+  .okmsg { color: #4ade80; }
+</style>
+</head>
+<body>
+<header>
+  <h1>粉末加样 · 执行机构实时控制</h1>
+  <div class="conn"><span class="dot" id="connDot"></span><span id="connText">未连接</span></div>
+  <button class="estop-btn" id="btnEstop">⏹ 全部急停</button>
+</header>
+
+<main>
+  <!-- 升降电机 -->
+  <section class="card" id="cardLift">
+    <h2>升降电机（双机同步） <span class="tag">MD30 ×2 · COM10 · 广播 0x00</span></h2>
+    <div class="desc">两台同款电缸必须同时运动：一条广播帧同时命中两台。行程 20–980（≈0–30mm）。</div>
+    <div class="row">
+      <label>目标位置</label>
+      <input type="range" id="liftTarget" min="20" max="980" step="1" value="33">
+      <input type="number" id="liftTargetNum" min="20" max="980" value="33">
+      <span class="val" id="liftTargetMm">≈1.0mm</span>
+    </div>
+    <div class="row">
+      <label>速度档</label>
+      <input type="number" id="liftSpeed" min="1" max="100" value="30">
+      <span class="tag">0–100，实测 30 档全程约 2s</span>
+    </div>
+    <div class="row">
+      <button class="op primary" id="btnLiftMove">同步运动</button>
+      <button class="op green" id="btnLiftHome">回原位 (33)</button>
+      <button class="op" id="btnLiftStop">停止</button>
+    </div>
+    <div class="status-grid">
+      <div class="stat"><div class="k">从站1 位置</div><div class="v" id="liftP1">–</div></div>
+      <div class="stat"><div class="k">从站1 状态</div><div class="v" id="liftM1">–</div></div>
+      <div class="stat"><div class="k">从站2 位置</div><div class="v" id="liftP2">–</div></div>
+      <div class="stat"><div class="k">从站2 状态</div><div class="v" id="liftM2">–</div></div>
+    </div>
+  </section>
+
+  <!-- 推杆 LA -->
+  <section class="card" id="cardRod">
+    <h2>推杆 <span class="tag">因时 LA · COM10 · ID 3</span></h2>
+    <div class="desc">LA 私有协议（55 AA 帧）。行程 0–2000，中程约 0.6s，落点 ±1。</div>
+    <div class="row">
+      <label>目标位置</label>
+      <input type="range" id="rodTarget" min="0" max="2000" step="1" value="500">
+      <input type="number" id="rodTargetNum" min="0" max="2000" value="500">
+      <span class="val" id="rodTargetPct">25%</span>
+    </div>
+    <div class="row">
+      <button class="op primary" id="btnRodMove">运动</button>
+      <button class="op green" id="btnRodHome">回原位 (208)</button>
+      <button class="op" id="btnRodStop">急停</button>
+    </div>
+    <div class="status-grid">
+      <div class="stat"><div class="k">当前位置</div><div class="v" id="rodPos">–</div></div>
+      <div class="stat"><div class="k">目标位置</div><div class="v" id="rodTgt">–</div></div>
+      <div class="stat"><div class="k">温度 ℃</div><div class="v" id="rodTemp">–</div></div>
+      <div class="stat"><div class="k">电流 mA</div><div class="v" id="rodCur">–</div></div>
+    </div>
+  </section>
+
+  <!-- 旋转搅拌 -->
+  <section class="card wide" id="cardStir">
+    <h2>旋转搅拌电机 <span class="tag">ZDT Emm42 V5.0 · COM9 · 私有 0x6B</span></h2>
+    <div class="desc">速度模式连续旋转。0–1000 RPM 可直接启动；更高转速必须用曲线启动（加速度 ≥200），否则会失步。</div>
+    <div class="row">
+      <label>转速 RPM</label>
+      <input type="number" id="stirRpm" min="0" max="3000" step="10" value="300">
+      <label style="min-width:auto">方向</label>
+      <select id="stirDir">
+        <option value="0">顺时针</option>
+        <option value="1">逆时针</option>
+      </select>
+      <label style="min-width:auto">加速度</label>
+      <select id="stirAcc">
+        <option value="0">0（直启，≤1000 RPM）</option>
+        <option value="200" selected>200（曲线，~357 RPM/s）</option>
+        <option value="220">220（曲线，较快）</option>
+        <option value="100">100（曲线，较缓）</option>
+      </select>
+      <button class="op primary" id="btnStirStart">启动</button>
+    </div>
+    <div class="row">
+      <button class="op" id="btnStirStopDecel">减速停止</button>
+      <button class="op" id="btnStirStopImm">立即停止</button>
+      <span class="tag">减速停 = 速度写 0 + 同一加速度曲线，acc 越小停越缓</span>
+    </div>
+    <div class="status-grid">
+      <div class="stat"><div class="k">实时转速</div><div class="v" id="stirRpmNow">–</div></div>
+      <div class="stat"><div class="k">使能状态</div><div class="v" id="stirEn">–</div></div>
+      <div class="stat"><div class="k">到位标志</div><div class="v" id="stirReach">–</div></div>
+      <div class="stat"><div class="k">故障位</div><div class="v" id="stirErr">–</div></div>
+    </div>
+  </section>
+
+  <div id="log"></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const logBox = $("log");
+function log(msg, cls) {
+  const t = new Date().toLocaleTimeString("zh-CN", {hour12: false});
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = `[${t}] ${msg}`;
+  logBox.appendChild(line);
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+async function api(path, body) {
+  const resp = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: {"Content-Type": "application/json"},
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || resp.statusText);
+  return data;
+}
+
+let busy = false;
+async function withBusy(cardId, fn, okMsg) {
+  if (busy) return;
+  busy = true;
+  const card = $(cardId);
+  card.classList.add("busy");
+  try {
+    await fn();
+    if (okMsg) log(okMsg, "okmsg");
+  } catch (e) {
+    log(`失败: ${e.message}`, "err");
+  } finally {
+    card.classList.remove("busy");
+    busy = false;
+  }
+}
+
+// ---------------- 升降 ----------------
+const liftRange = $("liftTarget"), liftNum = $("liftTargetNum");
+function liftSync(from) {
+  const v = parseInt(from === "range" ? liftRange.value : liftNum.value, 10);
+  liftRange.value = v; liftNum.value = v;
+  $("liftTargetMm").textContent = `≈${((v - 20) / 31.7).toFixed(1)}mm`;
+}
+liftRange.addEventListener("input", () => liftSync("range"));
+liftNum.addEventListener("change", () => liftSync("num"));
+
+$("btnLiftMove").onclick = () => withBusy("cardLift",
+  () => api("/api/lift/move", {target: +liftNum.value, speed: +$("liftSpeed").value}),
+  `升降双机已同步到 ${liftNum.value}`);
+$("btnLiftHome").onclick = () => withBusy("cardLift",
+  () => api("/api/lift/home", {speed: +$("liftSpeed").value}), "升降双机已回原位");
+$("btnLiftStop").onclick = () => withBusy("cardLift",
+  () => api("/api/lift/stop", {}), "升降已停止（目标写回当前位置）");
+
+// ---------------- 推杆 ----------------
+const rodRange = $("rodTarget"), rodNum = $("rodTargetNum");
+function rodSync(from) {
+  const v = parseInt(from === "range" ? rodRange.value : rodNum.value, 10);
+  rodRange.value = v; rodNum.value = v;
+  $("rodTargetPct").textContent = `${(v / 20).toFixed(0)}%`;
+}
+rodRange.addEventListener("input", () => rodSync("range"));
+rodNum.addEventListener("change", () => rodSync("num"));
+
+$("btnRodMove").onclick = () => withBusy("cardRod",
+  () => api("/api/rod/move", {target: +rodNum.value}), `推杆已到 ${rodNum.value}`);
+$("btnRodHome").onclick = () => withBusy("cardRod",
+  () => api("/api/rod/home", {}), "推杆已回原位 208");
+$("btnRodStop").onclick = () => withBusy("cardRod",
+  () => api("/api/rod/stop", {}), "推杆已急停（恢复运动需先使能）");
+
+// ---------------- 搅拌 ----------------
+$("btnStirStart").onclick = () => withBusy("cardStir",
+  () => api("/api/stir/start", {rpm: +$("stirRpm").value, acc: +$("stirAcc").value,
+                                direction: +$("stirDir").value}),
+  `搅拌已启动 ${$("stirRpm").value} RPM`);
+$("btnStirStopDecel").onclick = () => withBusy("cardStir",
+  () => api("/api/stir/stop", {mode: "decel", acc: +$("stirAcc").value || 200}),
+  "搅拌减速停止中");
+$("btnStirStopImm").onclick = () => withBusy("cardStir",
+  () => api("/api/stir/stop", {mode: "immediate"}), "搅拌已立即停止");
+
+// ---------------- 全局急停 ----------------
+$("btnEstop").onclick = async () => {
+  try {
+    await api("/api/estop", {});
+    log("⚠ 全部急停已执行（搅拌停 + 推杆急停 + 升降停）", "err");
+  } catch (e) { log(`急停失败: ${e.message}`, "err"); }
+};
+
+// ---------------- 状态轮询 ----------------
+const FLAG_TEXT = {0: "使能+到位", 1: "使能", 2: "到位", 3: "使能+到位"};
+function render(s) {
+  const online = s.ok || (s.lift || s.rod || s.stir);
+  $("connDot").classList.toggle("on", !!online);
+  $("connText").textContent = online ? `已连接 · ${new Date().toLocaleTimeString("zh-CN", {hour12: false})}` : "未连接";
+  if (s.errors && s.errors.length) log(s.errors.join(" | "), "err");
+
+  if (s.lift) {
+    $("liftP1").textContent = s.lift[0] ? s.lift[0].pos : "–";
+    $("liftP2").textContent = s.lift[1] ? s.lift[1].pos : "–";
+    $("liftM1").textContent = s.lift[0] ? (s.lift[0].moving ? "运动中" : "停止") : "–";
+    $("liftM2").textContent = s.lift[1] ? (s.lift[1].moving ? "运动中" : "停止") : "–";
+    $("liftM1").className = "v " + (s.lift[0] && s.lift[0].moving ? "moving" : "stopped");
+    $("liftM2").className = "v " + (s.lift[1] && s.lift[1].moving ? "moving" : "stopped");
+  }
+  if (s.rod) {
+    $("rodPos").textContent = s.rod.pos;
+    $("rodTgt").textContent = s.rod.target;
+    $("rodTemp").textContent = s.rod.temp;
+    $("rodCur").textContent = s.rod.current;
+  }
+  if (s.stir) {
+    $("stirRpmNow").textContent = s.stir.rpm === null ? "–" : s.stir.rpm;
+    $("stirEn").textContent = s.stir.enabled ? "已使能" : "未使能";
+    $("stirReach").textContent = s.stir.flags === null ? "–" : (FLAG_TEXT[s.stir.flags] || s.stir.flags);
+    const err = s.stir.flags === null ? null : (s.stir.flags >> 2) & 0x03;
+    $("stirErr").textContent = err ? (err & 1 ? "堵转 " : "") + (err & 2 ? "堵转保护" : "") : "无";
+    $("stirErr").className = "v " + (err ? "moving" : "stopped");
+  }
+}
+async function poll() {
+  try { render(await api("/api/status")); }
+  catch (e) { $("connDot").classList.remove("on"); $("connText").textContent = "未连接"; }
+}
+setInterval(poll, 500);
+poll();
+log("页面就绪。升降与推杆共用 COM10 总线，搅拌走 COM9。");
+log("安全提示：页面动作均为真实硬件动作，请确认机构周围无人后操作。");
+</script>
+</body>
+</html>
