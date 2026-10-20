@@ -244,7 +244,7 @@ $("btnRodMove").onclick = () => withBusy("cardRod",
 $("btnRodHome").onclick = () => withBusy("cardRod",
   () => api("/api/rod/home", {}), "推杆回原位指令已下发 → 208");
 $("btnRodStop").onclick = () => withBusy("cardRod",
-  () => api("/api/rod/stop", {}), "推杆已急停（恢复运动需先使能）");
+  () => api("/api/rod/stop", {}), "推杆已急停（下次点运动会自动重新使能）");
 
 // ---------------- 搅拌 ----------------
 $("btnStirStart").onclick = () => withBusy("cardStir",
