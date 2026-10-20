@@ -228,12 +228,36 @@ class QLS3600SignalGenerator:
         self.state.amplitude_vpp = raw / 100.0
 
     def set_duty(self, duty_percent: float) -> None:
-        """设置方波占空比（0.1%..99.9%，协议下发值为 占空比×10）。"""
+        """设置方波占空比（0.1%..99.9%，协议下发值为 占空比×10）。
+
+        **脉冲波就是方波 + 占空比**：设备没有独立的「脉冲波」波形编号，
+        波形选 1（方波）后用本方法改占空比即可得到任意脉宽的脉冲波，
+        占空比 50% 即对称方波。占空比只对波形 1 生效。
+        """
         if not 0.1 <= duty_percent <= 99.9:
             raise ValueError("占空比必须在 0.1..99.9 %")
         raw = int(round(duty_percent * 10))
         self._command(f"W{self.W_DUTY}{raw}s")
         self.state.duty_percent = raw / 10.0
+
+    def set_pulse_wave(self, duty_percent: float = 50.0) -> None:
+        """切换为脉冲波：波形=方波(1) + 指定占空比（一步到位）。"""
+        self.set_waveform(WAVEFORM_SQUARE)
+        self.set_duty(duty_percent)
+
+    def set_pulse_train(self, *, width_us: float | None = None,
+                        period_us: float | None = None,
+                        enabled: bool | None = None) -> None:
+        """独立脉冲输出通道（脉冲串）：Wg 脉宽 / Wh 周期 / Wr 开关。
+
+        与主通道波形互不影响，用于输出固定脉宽/周期的高速脉冲串。
+        """
+        if period_us is not None:
+            self.set_pulse_period_us(period_us)
+        if width_us is not None:
+            self.set_pulse_width_us(width_us)
+        if enabled is not None:
+            self.pulse_output(enabled)
 
     def set_offset(self, offset_v: float) -> None:
         """设置直流偏置（-10V..+10V，协议下发值为 偏置+1000）。"""
