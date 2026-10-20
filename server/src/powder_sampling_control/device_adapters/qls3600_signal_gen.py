@@ -319,6 +319,36 @@ class QLS3600SignalGenerator:
         self.output(False)
         return {"output_on": False}
 
+    def run_for(self, seconds: float, *, waveform: int | None = None,
+                frequency_hz: float | None = None,
+                amplitude_vpp: float | None = None) -> dict:
+        """定时振动：按需设置参数后开启输出，运行 ``seconds`` 秒后自动关闭。
+
+        **输出关闭放在 finally 里**——中途异常/超时也一定会停，避免长时间无人值守起振。
+        返回本次运行的参数与实测时长。
+        """
+        if seconds <= 0:
+            raise ValueError("运行时长必须大于 0")
+        if waveform is not None:
+            self.set_waveform(waveform)
+        if frequency_hz is not None:
+            self.set_frequency(frequency_hz)
+        if amplitude_vpp is not None:
+            self.set_amplitude(amplitude_vpp)
+        import time
+        started = time.monotonic()
+        self.output(True)
+        try:
+            time.sleep(seconds)
+        finally:
+            self.output(False)
+        return {"waveform": self.state.waveform_name,
+                "frequency_hz": self.state.frequency_hz,
+                "amplitude_vpp": self.state.amplitude_vpp,
+                "requested_s": seconds,
+                "elapsed_s": round(time.monotonic() - started, 2),
+                "output_on": False}
+
     # ------------------------------------------------------------------
     # 测量读取（读指令）
     # ------------------------------------------------------------------
