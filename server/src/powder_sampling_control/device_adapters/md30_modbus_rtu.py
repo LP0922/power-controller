@@ -362,16 +362,45 @@ class MD30DualLift:
         self._serial.flush()
 
     def move_both(self, target_raw: int, *, speed_raw: int | None = None) -> None:
-        """双机同步运动到同一目标位置（广播：先速度后目标，一帧各一条）。"""
+        """双机同步运动到同一目标位置（广播：先速度后目标，一帧各一条）。
+
+        2026-10-20 下午实测：MD30 断电重启后广播 0x00 写不再被接受（裸帧复测，
+        单写正常）。故广播下发后做一次生效校验：若两台都纹丝不动则退化为
+        背靠背单写（存在 ~150ms 启动差，但两台都能准确到位）。
+        """
         for driver in self._drivers:
             driver._validate_position(target_raw)
         speed = self.default_speed if speed_raw is None else speed_raw
         if not 0 <= speed <= 100:
             raise ValueError("MD30 speed_raw must be in the documented range 0..100")
         with self._lock:
+            try:
+                before = [driver.read_status() for driver in self._drivers]
+            except Exception:  # noqa: BLE001 - 基准读失败不阻断运动指令
+                before = None
             # 先广播速度，再广播目标位置（写目标即启动）。
             self._broadcast_write(MD30ModbusRTU.SPEED_REGISTER, speed)
+            # 实测：两条广播帧背靠背（~1ms）时第二条会被从站吞掉（位置帧丢失，
+            # 双机不动）；间隔 ≥50ms 才可靠。20ms 仍不稳，取 50ms。
+            import time
+            time.sleep(0.05)
             self._broadcast_write(MD30ModbusRTU.POSITION_REGISTER, target_raw)
+            # 广播生效校验（尽力而为）：0.4s 后位置应离开广播前的原位。
+            # 运动中读寄存器偶发受电气干扰出错，读失败时信任广播已生效。
+            time.sleep(0.4)
+            if before is None:
+                return
+            try:
+                after = [driver.read_status() for driver in self._drivers]
+            except Exception:  # noqa: BLE001
+                return
+            expected = any(abs(s.position_raw - target_raw) > 3 for s in before)
+            started = any(abs(a.position_raw - b.position_raw) > 2
+                          or a.moving for a, b in zip(after, before))
+            if expected and not started:
+                # 广播失效：退化为逐台单写（~150ms 启动差，但都能准确到位）。
+                for driver in self._drivers:
+                    driver.move_to(target_raw, speed_raw=speed)
 
     def stop_both(self) -> None:
         """停止双机：把目标写为各自当前位置（广播只能同值，逐台单写）。"""
