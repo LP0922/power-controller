@@ -56,8 +56,18 @@ class ActuatorHub:
         # COM9 锁：ZDT 搅拌。
         self._bus9_lock = threading.Lock()
 
-        self.lift = MD30DualLift(port=lift_port, slave_addresses=(1, 2), default_speed=30)
-        self.rod = LAActuator(LAConfig(port=lift_port, node_id=3))
+        # Windows 上同一串口只允许一个句柄：COM10 上的 MD30 与 LA 必须共享
+        # 同一个已打开的串口对象，互斥由 _bus10_lock 保证。
+        import serial as _serial_mod
+        self._shared_bus10 = _serial_mod.Serial(
+            port=lift_port, baudrate=115200, bytesize=8, parity="N",
+            stopbits=1, timeout=0.3)
+
+        self.lift = MD30DualLift(port=lift_port, slave_addresses=(1, 2),
+                                 default_speed=30,
+                                 serial_factory=lambda **kwargs: self._shared_bus10)
+        self.rod = LAActuator(LAConfig(port=lift_port, node_id=3),
+                              serial_port=self._shared_bus10)
         self.stir = ZDTEmm42Private(Emm42PrivateConfig(port=stir_port, slave_address=1))
 
     # ------------------------------------------------------------------
@@ -178,7 +188,7 @@ class ActuatorHub:
         return {"emergency_stop": True}
 
 
-HUB = ActuatorHub(LIFT_PORT, STIR_PORT)
+HUB: ActuatorHub  # 在 main() 中按命令行参数创建
 
 
 class ControlPageHandler(BaseHTTPRequestHandler):
@@ -250,21 +260,15 @@ class ControlPageHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global HUB
     parser = argparse.ArgumentParser(description="粉末加样执行机构实时控制页面")
     parser.add_argument("--lift-port", default=LIFT_PORT, help="双 MD30 升降 + LA 推杆 共享串口")
     parser.add_argument("--stir-port", default=STIR_PORT, help="ZDT 搅拌电机串口")
     parser.add_argument("--http-port", type=int, default=8765, help="HTTP 服务端口")
     args = parser.parse_args()
 
-    global LIFT_PORT, STIR_PORT
-    LIFT_PORT, STIR_PORT = args.lift_port, args.stir_port
-    HUB.lift_port = args.lift_port
-    HUB.stir_port = args.stir_port
-    HUB.lift._port = args.lift_port
-    for cfg in HUB.lift._configs:
-        cfg.__dict__["port"] = args.lift_port  # frozen dataclass：仅启动期修正
-    HUB.rod.config.__dict__["port"] = args.lift_port
-    HUB.stir.config.__dict__["port"] = args.stir_port
+    # 按命令行参数创建设备聚合层（避免运行期改写 frozen dataclass）。
+    HUB = ActuatorHub(args.lift_port, args.stir_port)
 
     server = ThreadingHTTPServer(("127.0.0.1", args.http_port), ControlPageHandler)
     print(f"控制页面已启动: http://127.0.0.1:{args.http_port}/")
