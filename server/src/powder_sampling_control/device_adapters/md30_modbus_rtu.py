@@ -327,7 +327,8 @@ class MD30DualLift:
     """
 
     # 同步容差（原始计数）：起跳前偏差超限拒绝启动；看门狗超限急停。
-    SYNC_TOLERANCE_RAW = 5
+    # 2026-10-20 用户确认放宽到 20（约 0.6mm）。
+    SYNC_TOLERANCE_RAW = 20
 
     def __init__(self, port: str, slave_addresses: tuple[int, int] = (1, 2),
                  baudrate: int = 115200, timeout_s: float = 0.3,
