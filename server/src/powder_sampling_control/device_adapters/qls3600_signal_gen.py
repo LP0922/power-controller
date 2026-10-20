@@ -10,8 +10,16 @@
 - **设备不回读设定值**（无法查询当前频率/幅度/波形），所以本驱动在内存里
   缓存最近一次写入值（:attr:`QLS3600SignalGenerator.state`），仅作参考。
 
+波形编号（协议只给 WA0s~WA32s，未给对照表；按说明书「波形种类」列举顺序排列，
+实测 0/1/2 均被设备接受并回 ``A<n>ok``）：
+    0 正弦波    1 方波    2 三角波    3 升锯齿波    4 降锯齿波
+    5 半波      6 全波    7 多音频    8 洛伦磁力    9 调幅波
+    10 辛克脉冲 11 白噪声 12 指数升   13 指数降    14 梯形波
+    15 直流信号 16 升梯形波 17 降梯形波
+    18..32 十五组用户自定义任意波（对应存储位 M1..M15）
+
 命令表（来自《QLS3600 通讯协议》）：
-    WA<n>s      波形 0..32（33 种）
+    WA<n>s      波形 0..32（33 种，见上方编号表）
     WB<n*100>s  频率，0.01Hz 分辨率（1000.00Hz → WB100000s）
     WC<n*100>s  幅度（峰峰），0.01V 分辨率（8.00V → WC800s）
     WE<n*10>s   占空比，0.1%（50.0% → WE500s）
@@ -89,6 +97,28 @@ class QLS3600State:
     offset_v: Optional[float] = None
     output_on: Optional[bool] = None
 
+    @property
+    def waveform_name(self) -> Optional[str]:
+        """当前波形的中文名（未设置时为 None）。"""
+        if self.waveform is None:
+            return None
+        return WAVEFORM_NAMES.get(self.waveform)
+
+
+# 波形编号 → 名称（0..17 内置波形，18..32 用户自定义任意波）
+WAVEFORM_NAMES: dict[int, str] = {
+    0: "正弦波", 1: "方波", 2: "三角波", 3: "升锯齿波", 4: "降锯齿波",
+    5: "半波", 6: "全波", 7: "多音频", 8: "洛伦磁力", 9: "调幅波",
+    10: "辛克脉冲", 11: "白噪声", 12: "指数升", 13: "指数降", 14: "梯形波",
+    15: "直流信号", 16: "升梯形波", 17: "降梯形波",
+}
+WAVEFORM_NAMES.update({n: f"任意波{n - 17}" for n in range(18, 33)})
+
+# 常用波形常量
+WAVEFORM_SINE = 0
+WAVEFORM_SQUARE = 1
+WAVEFORM_TRIANGLE = 2
+
 
 class QLS3600SignalGenerator:
     """QLS3600S 命令行协议驱动。
@@ -97,10 +127,10 @@ class QLS3600SignalGenerator:
 
         gen = QLS3600SignalGenerator(QLS3600Config(port="COM16"))
         gen.connect()
-        gen.set_waveform(1)          # 方波（具体序号以设备面板为准）
-        gen.set_frequency(50.0)      # 50 Hz 振动
-        gen.set_amplitude(3.0)       # 3 Vpp（振动强度）
-        gen.output(True)             # 开始振动
+        gen.set_waveform(WAVEFORM_SINE)  # 正弦波（0），给料默认波形
+        gen.set_frequency(50.0)          # 50 Hz 振动
+        gen.set_amplitude(3.0)           # 3 Vpp（振动强度）
+        gen.output(True)                 # 开始振动
         ...
         gen.output(False)            # 停止振动
         gen.close()
@@ -163,11 +193,22 @@ class QLS3600SignalGenerator:
     # ------------------------------------------------------------------
 
     def set_waveform(self, waveform: int) -> None:
-        """设置输出波形（0..32，具体序号对应关系以设备面板为准）。"""
+        """设置输出波形（0..32）。
+
+        0=正弦波、1=方波、2=三角波……（完整对照见模块文档与 WAVEFORM_NAMES）。
+        """
         if not 0 <= int(waveform) <= 32:
             raise ValueError("波形序号必须在 0..32")
         self._command(f"W{self.W_WAVEFORM}{int(waveform)}s")
         self.state.waveform = int(waveform)
+
+    def set_waveform_name(self, name: str) -> None:
+        """按中文名设置波形，例如 ``set_waveform_name("正弦波")``。"""
+        for index, wave_name in WAVEFORM_NAMES.items():
+            if wave_name == name:
+                self.set_waveform(index)
+                return
+        raise ValueError(f"未知波形名: {name!r}（可用: {', '.join(WAVEFORM_NAMES.values())}）")
 
     def set_frequency(self, frequency_hz: float) -> None:
         """设置输出频率（0.01Hz 分辨率，协议下发值为 频率×100）。"""
