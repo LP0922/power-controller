@@ -299,6 +299,14 @@ def _to_int16(value: int) -> int:
 BROADCAST_ADDRESS = 0x00  # 2026-10-20 实测：Modbus 模式广播地址是 0x00（TTL 手册的 255 无效）
 
 
+class MD30SyncGuardError(MD30CommunicationError):
+    """双机同步保障触发：宁可不动/急停，也不允许两台不同步地运动。
+
+    升降双机机械上刚性关联，一快一慢或单台运动会别坏机构——
+    这是安全级约束，任何同步异常都必须立即停机并报警。
+    """
+
+
 class MD30DualLift:
     """双 MD30 升降电机同步控制层（两台同款、必须同时运动）。
 
@@ -306,13 +314,25 @@ class MD30DualLift:
     会造成一快一慢；改用**广播写地址 0x00**（一条帧同时命中两台，无应答）
     实测两台同时到位。广播局限：只能发同一目标值——升降双机同目标，正好合适。
 
-    注意：广播帧无应答，执行结果靠后续读位置确认；本类内部持有串口锁，
+    三重同步保障（2026-10-20 应用户安全要求实现）：
+    1. 起跳前校验：双机位置偏差超过 sync_tolerance_raw 时拒绝启动（先对齐）；
+    2. 起跳监督：广播下发后必须确认**两台都**离开原位，任一台未动或
+       无法确认状态 → 立即急停双机并抛 :class:`MD30SyncGuardError`
+       （禁止再退化为单写——那本身就制造 150ms 启动差）；
+    3. 运行中看门狗：由上层轮询（控制面板）持续比对双机位置偏差，
+       超阈值调用 :meth:`emergency_stop_both` 并锁存告警。
+
+    广播帧无应答，执行结果靠后续读位置确认；本类内部持有串口锁，
     因为升降总线（COM10）上还挂着推杆 LA（LA 私有协议），共享访问需互斥。
     """
 
+    # 同步容差（原始计数）：起跳前偏差超限拒绝启动；看门狗超限急停。
+    SYNC_TOLERANCE_RAW = 5
+
     def __init__(self, port: str, slave_addresses: tuple[int, int] = (1, 2),
                  baudrate: int = 115200, timeout_s: float = 0.3,
-                 default_speed: int = 30, serial_factory: Optional[Callable[..., SerialPort]] = None) -> None:
+                 default_speed: int = 30, serial_factory: Optional[Callable[..., SerialPort]] = None,
+                 sync_tolerance_raw: int = SYNC_TOLERANCE_RAW) -> None:
         self._configs = [MD30Config(port=port, slave_address=a, baudrate=baudrate,
                                     timeout_s=timeout_s,
                                     min_position_raw=20, max_position_raw=980)
@@ -321,6 +341,7 @@ class MD30DualLift:
         self._port = port
         self._baudrate = baudrate
         self.default_speed = default_speed
+        self.sync_tolerance_raw = int(sync_tolerance_raw)
         self._serial: SerialPort | None = None
         self._serial_factory = serial_factory
         import threading
@@ -361,53 +382,149 @@ class MD30DualLift:
         self._serial.write(_append_crc(payload))
         self._serial.flush()
 
-    def move_both(self, target_raw: int, *, speed_raw: int | None = None) -> None:
-        """双机同步运动到同一目标位置（广播：先速度后目标，一帧各一条）。
+    def _read_positions_with_retry(self, attempts: int = 3, delay_s: float = 0.15) -> list[MD30Status]:
+        """读双机状态（运动中电气干扰可能造成偶发读错，重试几次再下结论）。
 
-        2026-10-20 下午实测：MD30 断电重启后广播 0x00 写不再被接受（裸帧复测，
-        单写正常）。故广播下发后做一次生效校验：若两台都纹丝不动则退化为
-        背靠背单写（存在 ~150ms 启动差，但两台都能准确到位）。
+        调用方需持有锁。
         """
+        import time
+        last_error: Exception | None = None
+        for _ in range(attempts):
+            try:
+                return [driver.read_status() for driver in self._drivers]
+            except Exception as error:  # noqa: BLE001 - 重试到次数用尽
+                last_error = error
+                time.sleep(delay_s)
+        assert last_error is not None
+        raise last_error
+
+    def _emergency_stop_both_locked(self) -> None:
+        """同步急停双机（调用方需持有锁）。
+
+        广播写目标位置 = 两机当前位置的平均值：较快的一台先减速停下，
+        随后逐台把目标写回各自当前位置做精确停机。偏差已被看门狗限制在
+        小范围内，广播均值停机不会造成超程。
+        """
+        import time
+        try:
+            positions = [s.position_raw for s in self._read_positions_with_retry()]
+            average = int(round(sum(positions) / len(positions)))
+            average = max(min(average, self._drivers[0].config.max_position_raw),
+                          self._drivers[0].config.min_position_raw)
+            self._broadcast_write(MD30ModbusRTU.POSITION_REGISTER, average)
+        except Exception:  # noqa: BLE001 - 读不到位置就直接逐台停
+            pass
+        for driver in self._drivers:
+            try:
+                status = driver.read_status()
+                driver._write_register(MD30ModbusRTU.POSITION_REGISTER, status.position_raw)
+            except Exception:  # noqa: BLE001 - 急停尽力而为
+                pass
+        time.sleep(0.1)
+
+    def emergency_stop_both(self) -> None:
+        """同步急停双机（带锁版本，供看门狗/上层直接调用）。"""
+        with self._lock:
+            self._emergency_stop_both_locked()
+
+    def move_both(self, target_raw: int, *, speed_raw: int | None = None) -> None:
+        """双机同步运动到同一目标位置（广播：先速度后目标，帧间隔 50ms）。
+
+        三重保障之 1+2（起跳前校验 + 起跳监督）：
+        - 起跳前双机位置偏差超过 sync_tolerance_raw → 拒绝启动（先 align 对齐）；
+        - 广播后 0.35s 内必须确认两台**都**离开原位，否则立即急停双机并抛
+          :class:`MD30SyncGuardError`。绝不为"能动"而退化为单写——
+          单写有 ~150ms 启动差，违反"必须同时运动"的安全约束。
+        """
+        import time
         for driver in self._drivers:
             driver._validate_position(target_raw)
         speed = self.default_speed if speed_raw is None else speed_raw
         if not 0 <= speed <= 100:
             raise ValueError("MD30 speed_raw must be in the documented range 0..100")
         with self._lock:
+            # ---- 保障 1：起跳前同步校验 ----
             try:
-                before = [driver.read_status() for driver in self._drivers]
-            except Exception:  # noqa: BLE001 - 基准读失败不阻断运动指令
-                before = None
-            # 先广播速度，再广播目标位置（写目标即启动）。
+                before = self._read_positions_with_retry(attempts=2)
+            except Exception as error:  # noqa: BLE001
+                raise MD30SyncGuardError(
+                    "双机位置读取失败，无法确认同步状态，拒绝启动运动") from error
+            deviation = abs(before[0].position_raw - before[1].position_raw)
+            if deviation > self.sync_tolerance_raw:
+                raise MD30SyncGuardError(
+                    f"双机位置偏差 {deviation} 超过容差 {self.sync_tolerance_raw}，"
+                    f"拒绝启动（当前位置 {[s.position_raw for s in before]}，"
+                    f"请先执行对齐）")
+            if before[0].moving or before[1].moving:
+                raise MD30SyncGuardError("双机尚在运动中，拒绝叠加新目标（先停止再下发）")
+
+            # ---- 广播下发（先速度后目标，50ms 间隔防吞帧）----
             self._broadcast_write(MD30ModbusRTU.SPEED_REGISTER, speed)
             # 实测：两条广播帧背靠背（~1ms）时第二条会被从站吞掉（位置帧丢失，
             # 双机不动）；间隔 ≥50ms 才可靠。20ms 仍不稳，取 50ms。
-            import time
             time.sleep(0.05)
             self._broadcast_write(MD30ModbusRTU.POSITION_REGISTER, target_raw)
-            # 广播生效校验（尽力而为）：0.4s 后位置应离开广播前的原位。
-            # 运动中读寄存器偶发受电气干扰出错，读失败时信任广播已生效。
-            time.sleep(0.4)
-            if before is None:
-                return
+
+            # ---- 保障 2：起跳监督（0.35s 后确认两台都离开原位）----
+            time.sleep(0.35)
             try:
-                after = [driver.read_status() for driver in self._drivers]
-            except Exception:  # noqa: BLE001
-                return
-            expected = any(abs(s.position_raw - target_raw) > 3 for s in before)
-            started = any(abs(a.position_raw - b.position_raw) > 2
-                          or a.moving for a, b in zip(after, before))
-            if expected and not started:
-                # 广播失效：退化为逐台单写（~150ms 启动差，但都能准确到位）。
-                for driver in self._drivers:
-                    driver.move_to(target_raw, speed_raw=speed)
+                after = self._read_positions_with_retry(attempts=3)
+            except Exception as error:  # noqa: BLE001
+                # 状态读不回来 = 无法确认同步，安全原则：立即停。
+                self._emergency_stop_both_locked()
+                raise MD30SyncGuardError(
+                    "广播下发后无法读取双机状态（无法确认同步），已急停双机") from error
+            started = [abs(a.position_raw - b.position_raw) > 2 or a.moving
+                       for a, b in zip(after, before)]
+            if not any(started):
+                # 两台都没动：广播未生效（可能断电重启后不认广播），但没造成不同步。
+                raise MD30SyncGuardError(
+                    "广播指令未生效（双机均未启动，已安全停留在原位）。"
+                    "请检查驱动器供电/模式后重试")
+            if not all(started):
+                # 一动一不动：正是必须杜绝的险情 → 立即同步急停 + 报警。
+                self._emergency_stop_both_locked()
+                raise MD30SyncGuardError(
+                    f"双机启动不同步（{started}），已同步急停双机并锁存告警，"
+                    "请检查后先对齐再继续")
 
     def stop_both(self) -> None:
-        """停止双机：把目标写为各自当前位置（广播只能同值，逐台单写）。"""
+        """停止双机：把目标写为各自当前位置（广播只能同值，逐台单写）。
+
+        仅在双机静止/基本同步时使用；运行中急停请用 :meth:`emergency_stop_both`。
+        """
         with self._lock:
             for driver in self._drivers:
                 status = driver.read_status()
                 driver._write_register(MD30ModbusRTU.POSITION_REGISTER, status.position_raw)
+
+    def align(self, *, speed_raw: int | None = None) -> dict:
+        """对齐双机位置（仅在双机静止时调用）。
+
+        逐台单写把两台都移到当前位置的中点，等停止后校验偏差归零。
+        逐台单写在这里是安全的：静止状态下的先后运动不构成同步险情。
+        """
+        import time
+        speed = self.default_speed if speed_raw is None else speed_raw
+        with self._lock:
+            statuses = self._read_positions_with_retry(attempts=2)
+            if any(s.moving for s in statuses):
+                raise MD30SyncGuardError("双机尚在运动中，禁止对齐（先停止）")
+            midpoint = int(round(sum(s.position_raw for s in statuses) / len(statuses)))
+            for driver in self._drivers:
+                driver._validate_position(midpoint)
+                driver.move_to(midpoint, speed_raw=speed)
+        # 等待停止并校验（读操作重新拿锁）。
+        self.wait_until_stopped(timeout_s=15.0, poll_interval_s=0.3)
+        final = self.read_positions()
+        deviation = abs(final[0].position_raw - final[1].position_raw)
+        return {"midpoint": midpoint, "final_positions": [s.position_raw for s in final],
+                "deviation": deviation, "aligned": deviation <= self.sync_tolerance_raw}
+
+    def sync_deviation(self) -> int:
+        """当前双机位置偏差（绝对值）。"""
+        statuses = self.read_positions()
+        return abs(statuses[0].position_raw - statuses[1].position_raw)
 
     def read_positions(self) -> list[MD30Status]:
         """读两台状态（位置/速度/负载/电压/运动标志），按从站地址顺序返回。"""

@@ -73,6 +73,15 @@
   }
   .err { color: #f87171; }
   .okmsg { color: #4ade80; }
+  .alarm {
+    display: none; grid-column: span 2; border: 2px solid var(--danger);
+    background: #fef2f2; color: var(--danger); border-radius: 12px;
+    padding: 12px 16px; font-weight: 700; font-size: 14px;
+    align-items: center; gap: 12px;
+  }
+  .alarm.show { display: flex; }
+  .dev-ok { color: var(--accent-2); }
+  .dev-bad { color: var(--danger); }
 </style>
 </head>
 <body>
@@ -83,10 +92,17 @@
 </header>
 
 <main>
+  <!-- 双机同步告警横幅（锁存，确认后才消失） -->
+  <div class="alarm" id="syncAlarm">
+    <span style="font-size:18px">⚠</span>
+    <span id="syncAlarmText" style="flex:1"></span>
+    <button class="op" id="btnSyncAck">确认恢复</button>
+  </div>
+
   <!-- 升降电机 -->
   <section class="card" id="cardLift">
     <h2>升降电机（双机同步） <span class="tag">MD30 ×2 · COM10 · 广播 0x00</span></h2>
-    <div class="desc">两台同款电缸必须同时运动：一条广播帧同时命中两台。行程 20–980（≈0–30mm）。</div>
+    <div class="desc">两台同款电缸必须同时运动：广播一帧同发 + 起跳监督 + 运行中偏差看门狗（超限自动急停）。行程 20–980（≈0–30mm）。速度固定 10，不可调。</div>
     <div class="row">
       <label>目标位置</label>
       <input type="range" id="liftTarget" min="20" max="980" step="1" value="33">
@@ -94,20 +110,16 @@
       <span class="val" id="liftTargetMm">≈1.0mm</span>
     </div>
     <div class="row">
-      <label>速度档</label>
-      <input type="number" id="liftSpeed" min="1" max="100" value="30">
-      <span class="tag">0–100，实测 30 档全程约 2s</span>
-    </div>
-    <div class="row">
       <button class="op primary" id="btnLiftMove">同步运动</button>
       <button class="op green" id="btnLiftHome">回原位 (33)</button>
       <button class="op" id="btnLiftStop">停止</button>
+      <button class="op gray" id="btnLiftAlign">对齐双机</button>
     </div>
     <div class="status-grid">
       <div class="stat"><div class="k">从站1 位置</div><div class="v" id="liftP1">–</div></div>
-      <div class="stat"><div class="k">从站1 状态</div><div class="v" id="liftM1">–</div></div>
       <div class="stat"><div class="k">从站2 位置</div><div class="v" id="liftP2">–</div></div>
-      <div class="stat"><div class="k">从站2 状态</div><div class="v" id="liftM2">–</div></div>
+      <div class="stat"><div class="k">双机偏差</div><div class="v" id="liftDev">–</div></div>
+      <div class="stat"><div class="k">运动状态</div><div class="v" id="liftM">–</div></div>
     </div>
   </section>
 
@@ -201,8 +213,9 @@ async function withBusy(cardId, fn, okMsg) {
   const card = $(cardId);
   card.classList.add("busy");
   try {
-    await fn();
-    if (okMsg) log(okMsg, "okmsg");
+    const result = await fn();
+    if (typeof okMsg === "function") log(okMsg(result), "okmsg");
+    else if (okMsg) log(okMsg, "okmsg");
   } catch (e) {
     log(`失败: ${e.message}`, "err");
   } finally {
@@ -222,12 +235,21 @@ liftRange.addEventListener("input", () => liftSync("range"));
 liftNum.addEventListener("change", () => liftSync("num"));
 
 $("btnLiftMove").onclick = () => withBusy("cardLift",
-  () => api("/api/lift/move", {target: +liftNum.value, speed: +$("liftSpeed").value}),
-  `升降指令已下发 → ${liftNum.value}（下方状态实时刷新）`);
+  () => api("/api/lift/move", {target: +liftNum.value}),
+  `升降指令已下发 → ${liftNum.value}（速度固定 10，下方状态实时刷新）`);
 $("btnLiftHome").onclick = () => withBusy("cardLift",
-  () => api("/api/lift/home", {speed: +$("liftSpeed").value}), "升降回原位指令已下发 → 33");
+  () => api("/api/lift/home", {}), "升降回原位指令已下发 → 33");
 $("btnLiftStop").onclick = () => withBusy("cardLift",
   () => api("/api/lift/stop", {}), "升降停止指令已下发（目标写回当前位置）");
+$("btnLiftAlign").onclick = () => withBusy("cardLift",
+  () => api("/api/lift/align", {}),
+  data => `双机已对齐到 ${data.midpoint}，最终偏差 ${data.deviation}`);
+$("btnSyncAck").onclick = async () => {
+  try {
+    const r = await api("/api/lift/ack", {});
+    log(`同步告警已确认恢复（清除：${r.cleared ? r.cleared.message : "无"}）`, "okmsg");
+  } catch (e) { log(`确认失败: ${e.message}`, "err"); }
+};
 
 // ---------------- 推杆 ----------------
 const rodRange = $("rodTarget"), rodNum = $("rodTargetNum");
@@ -276,10 +298,23 @@ function render(s) {
   if (s.lift) {
     $("liftP1").textContent = s.lift[0] ? s.lift[0].pos : "–";
     $("liftP2").textContent = s.lift[1] ? s.lift[1].pos : "–";
-    $("liftM1").textContent = s.lift[0] ? (s.lift[0].moving ? "运动中" : "停止") : "–";
-    $("liftM2").textContent = s.lift[1] ? (s.lift[1].moving ? "运动中" : "停止") : "–";
-    $("liftM1").className = "v " + (s.lift[0] && s.lift[0].moving ? "moving" : "stopped");
-    $("liftM2").className = "v " + (s.lift[1] && s.lift[1].moving ? "moving" : "stopped");
+    const moving = (s.lift[0] && s.lift[0].moving) || (s.lift[1] && s.lift[1].moving);
+    $("liftM").textContent = moving ? "运动中" : "停止";
+    $("liftM").className = "v " + (moving ? "moving" : "stopped");
+  }
+  if (s.sync) {
+    const dev = s.sync.dev, tol = s.sync.tol;
+    const devEl = $("liftDev");
+    devEl.textContent = dev === null ? "–" : `${dev} / ${tol}`;
+    devEl.className = "v " + (dev === null ? "" : (dev > tol ? "dev-bad" : "dev-ok"));
+    // 告警横幅：锁存告警存在即显示。
+    if (s.sync.alarm) {
+      $("syncAlarmText").textContent = `【${s.sync.alarm.time}】${s.sync.alarm.message}` +
+        (s.sync.alarm.positions ? `（当时位置 ${s.sync.alarm.positions.join("/")}）` : "");
+      $("syncAlarm").classList.add("show");
+    } else {
+      $("syncAlarm").classList.remove("show");
+    }
   }
   if (s.rod) {
     $("rodPos").textContent = s.rod.pos;

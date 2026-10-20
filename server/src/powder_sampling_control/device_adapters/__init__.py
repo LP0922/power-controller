@@ -21,6 +21,7 @@ from .md30_modbus_rtu import (
     MD30DualLift,
     MD30ModbusRTU,
     MD30Status,
+    MD30SyncGuardError,
 )
 from .zdt_emm42 import Emm42Config, Emm42Status, ZDTEmm42
 from .zdt_emm42_private import (
@@ -51,6 +52,7 @@ __all__ = [
     "MD30ModbusRTU",
     "MD30Status",
     "MD30DualLift",
+    "MD30SyncGuardError",
     "BROADCAST_ADDRESS",
     "Emm42Config",
     "Emm42Status",

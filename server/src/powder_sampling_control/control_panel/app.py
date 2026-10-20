@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import threading
+import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +31,7 @@ from powder_sampling_control.device_adapters import (
     LAActuator,
     LAConfig,
     MD30DualLift,
+    MD30SyncGuardError,
     ZDTEmm42Private,
     Emm42PrivateConfig,
 )
@@ -42,6 +44,8 @@ LIFT_PORT = "COM10"      # 双 MD30 升降 + LA 推杆 共享总线
 STIR_PORT = "COM9"       # ZDT 搅拌电机
 LIFT_HOME_RAW = 33       # 升降原位（实测收拢位 32/33）
 ROD_HOME = 208           # 推杆原位（实测起点）
+# 升降速度固定为 10（用户要求：慢速给看门狗留足轮询反应时间，页面不可调）。
+LIFT_SPEED_RAW = 10
 
 HERE = Path(__file__).resolve().parent
 
@@ -64,9 +68,13 @@ class ActuatorHub:
         self._last_status: dict = {"lift": None, "rod": None, "stir": None}
         # 共享串口句柄惰性创建：设备掉线/重插后自动重开，服务进程不退出。
         self._shared_bus10 = None
+        # 同步保障（保障 3：运行中看门狗）——锁存告警直到页面确认恢复。
+        self.sync_tolerance = MD30DualLift.SYNC_TOLERANCE_RAW
+        self._sync_alarm: dict | None = None
+        self._sync_alarm_lock = threading.Lock()
 
         self.lift = MD30DualLift(port=lift_port, slave_addresses=(1, 2),
-                                 default_speed=30,
+                                 default_speed=LIFT_SPEED_RAW,
                                  serial_factory=lambda **kwargs: self._get_bus10())
         self.rod = LAActuator(LAConfig(port=lift_port, node_id=3),
                               serial_factory=lambda **kwargs: self._get_bus10())
@@ -97,6 +105,8 @@ class ActuatorHub:
         self.lift._serial = None
         for driver in self.lift._drivers:
             driver._serial = None
+            # 同时清零失败计数：MD30 达到上限后会拒绝一切事务直到重置。
+            driver._consecutive_failures = 0
         self.rod._serial = None
 
     # ------------------------------------------------------------------
@@ -125,6 +135,39 @@ class ActuatorHub:
     # 状态轮询
     # ------------------------------------------------------------------
 
+    def _raise_sync_alarm(self, message: str, positions: list[int] | None = None) -> None:
+        """锁存同步告警（页面持续红条显示，直到用户确认恢复）。"""
+        with self._sync_alarm_lock:
+            if self._sync_alarm is None:  # 只记第一条，避免刷屏覆盖
+                self._sync_alarm = {"message": message,
+                                    "positions": positions,
+                                    "time": time.strftime("%H:%M:%S")}
+
+    def acknowledge_sync_alarm(self) -> dict:
+        """清除锁存的同步告警（用户在页面上点「确认恢复」）。"""
+        with self._sync_alarm_lock:
+            alarm = self._sync_alarm
+            self._sync_alarm = None
+        return {"acknowledged": True, "cleared": alarm}
+
+    def _sync_watchdog(self, statuses: list) -> None:
+        """保障 3：运行中偏差看门狗（每轮状态轮询都会执行）。
+
+        任一电机在运动且双机偏差超容差 → 立即同步急停双机 + 锁存告警。
+        """
+        deviation = abs(statuses[0].position_raw - statuses[1].position_raw)
+        any_moving = any(s.moving for s in statuses)
+        if any_moving and deviation > self.sync_tolerance:
+            positions = [s.position_raw for s in statuses]
+            try:
+                self.lift.emergency_stop_both()
+                message = (f"运行中双机偏差 {deviation} 超容差 "
+                           f"{self.sync_tolerance}，已同步急停双机")
+            except Exception as error:  # noqa: BLE001 - 急停失败更要大声报警
+                message = (f"运行中双机偏差 {deviation} 超容差，且急停执行失败"
+                           f"（{error}）——请立即断电！")
+            self._raise_sync_alarm(message, positions)
+
     def poll_status(self) -> dict:
         status: dict = {"lift": None, "rod": None, "stir": None, "errors": [], "stale": False}
         try:
@@ -137,6 +180,9 @@ class ActuatorHub:
                          "speed": s.speed_raw, "voltage": s.voltage_raw}
                         for d, s in zip(self.lift._drivers, statuses)
                     ]
+                    # 保障 3：看门狗（持有总线锁内执行急停，避免与控制指令竞争）。
+                    if len(statuses) == 2:
+                        self._sync_watchdog(statuses)
                 except Exception as error:  # noqa: BLE001 - 轮询不容错会中断页面
                     status["errors"].append(f"lift: {error}")
                     self._reset_bus10()  # 串口级错误：丢弃句柄，下轮自动重连
@@ -170,7 +216,17 @@ class ActuatorHub:
             status["stir"] = self._last_status["stir"]
         if status["stir"] is not None:
             self._last_status["stir"] = status["stir"]
-        status["ok"] = not status["errors"]
+        # 同步保障信息：当前偏差 + 锁存告警（页面据此显示告警红条）。
+        if status["lift"] and len(status["lift"]) == 2:
+            status["sync"] = {
+                "dev": abs(status["lift"][0]["pos"] - status["lift"][1]["pos"]),
+                "tol": self.sync_tolerance,
+                "alarm": self._sync_alarm,
+            }
+        else:
+            status["sync"] = {"dev": None, "tol": self.sync_tolerance,
+                              "alarm": self._sync_alarm}
+        status["ok"] = not status["errors"] and self._sync_alarm is None
         return status
 
     # ------------------------------------------------------------------
@@ -179,17 +235,26 @@ class ActuatorHub:
 
     def lift_move(self, target: int, speed: int | None = None) -> dict:
         # 只下发目标、立即返回：运动过程由页面 500ms 状态轮询实时刷新。
+        # 安全约束：速度固定 LIFT_SPEED_RAW（慢速），页面传值一律忽略。
         with self._bus10(self.CTRL_LOCK_TIMEOUT_S):
-            self.lift.move_both(int(target), speed_raw=speed)
-        return {"target": int(target), "sent": True}
+            self.lift.move_both(int(target), speed_raw=LIFT_SPEED_RAW)
+        return {"target": int(target), "sent": True, "speed": LIFT_SPEED_RAW}
 
     def lift_home(self, speed: int | None = None) -> dict:
-        return self.lift_move(LIFT_HOME_RAW, speed=speed)
+        return self.lift_move(LIFT_HOME_RAW)
 
     def lift_stop(self) -> dict:
         with self._bus10(self.CTRL_LOCK_TIMEOUT_S):
             self.lift.stop_both()
         return {"stopped": True}
+
+    def lift_align(self, speed: int | None = None) -> dict:
+        """对齐双机（把两台都移到当前位置中点，消除起跳前偏差）。"""
+        with self._bus10(15.0):  # 对齐含等待停止，允许更长时间
+            result = self.lift.align(speed_raw=speed)
+        if not result["aligned"]:
+            raise MD30SyncGuardError(f"对齐后偏差仍为 {result['deviation']}，请检查机构")
+        return result
 
     # ------------------------------------------------------------------
     # 推杆（LA）
@@ -312,8 +377,10 @@ class ControlPageHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - http.server 命名
         routes = {
             "/api/lift/move": lambda body: HUB.lift_move(body["target"], body.get("speed")),
-            "/api/lift/home": lambda body: HUB.lift_home(body.get("speed")),
+            "/api/lift/home": lambda body: HUB.lift_home(),
             "/api/lift/stop": lambda body: HUB.lift_stop(),
+            "/api/lift/align": lambda body: HUB.lift_align(),
+            "/api/lift/ack": lambda body: HUB.acknowledge_sync_alarm(),
             "/api/rod/move": lambda body: HUB.rod_move(body["target"]),
             "/api/rod/home": lambda body: HUB.rod_home(),
             "/api/rod/stop": lambda body: HUB.rod_stop(),
