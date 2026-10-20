@@ -223,11 +223,11 @@ liftNum.addEventListener("change", () => liftSync("num"));
 
 $("btnLiftMove").onclick = () => withBusy("cardLift",
   () => api("/api/lift/move", {target: +liftNum.value, speed: +$("liftSpeed").value}),
-  `升降双机已同步到 ${liftNum.value}`);
+  `升降指令已下发 → ${liftNum.value}（下方状态实时刷新）`);
 $("btnLiftHome").onclick = () => withBusy("cardLift",
-  () => api("/api/lift/home", {speed: +$("liftSpeed").value}), "升降双机已回原位");
+  () => api("/api/lift/home", {speed: +$("liftSpeed").value}), "升降回原位指令已下发 → 33");
 $("btnLiftStop").onclick = () => withBusy("cardLift",
-  () => api("/api/lift/stop", {}), "升降已停止（目标写回当前位置）");
+  () => api("/api/lift/stop", {}), "升降停止指令已下发（目标写回当前位置）");
 
 // ---------------- 推杆 ----------------
 const rodRange = $("rodTarget"), rodNum = $("rodTargetNum");
@@ -240,9 +240,9 @@ rodRange.addEventListener("input", () => rodSync("range"));
 rodNum.addEventListener("change", () => rodSync("num"));
 
 $("btnRodMove").onclick = () => withBusy("cardRod",
-  () => api("/api/rod/move", {target: +rodNum.value}), `推杆已到 ${rodNum.value}`);
+  () => api("/api/rod/move", {target: +rodNum.value}), `推杆指令已下发 → ${rodNum.value}`);
 $("btnRodHome").onclick = () => withBusy("cardRod",
-  () => api("/api/rod/home", {}), "推杆已回原位 208");
+  () => api("/api/rod/home", {}), "推杆回原位指令已下发 → 208");
 $("btnRodStop").onclick = () => withBusy("cardRod",
   () => api("/api/rod/stop", {}), "推杆已急停（恢复运动需先使能）");
 
@@ -250,7 +250,7 @@ $("btnRodStop").onclick = () => withBusy("cardRod",
 $("btnStirStart").onclick = () => withBusy("cardStir",
   () => api("/api/stir/start", {rpm: +$("stirRpm").value, acc: +$("stirAcc").value,
                                 direction: +$("stirDir").value}),
-  `搅拌已启动 ${$("stirRpm").value} RPM`);
+  `搅拌启动指令已下发 ${$("stirRpm").value} RPM`);
 $("btnStirStopDecel").onclick = () => withBusy("cardStir",
   () => api("/api/stir/stop", {mode: "decel", acc: +$("stirAcc").value || 200}),
   "搅拌减速停止中");

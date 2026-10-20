@@ -109,11 +109,11 @@ class ActuatorHub:
     # ------------------------------------------------------------------
 
     def lift_move(self, target: int, speed: int | None = None) -> dict:
+        # 只下发目标、立即返回：运动过程由页面 500ms 状态轮询实时刷新。
+        # （原先在这里等双机停止，最长阻塞 30s，HTTP 请求期间页面全局锁死。）
         with self._bus10_lock:
             self.lift.move_both(int(target), speed_raw=speed)
-            statuses = self.lift.wait_until_stopped(timeout_s=30.0)
-        return {"lift": [{"addr": d.config.slave_address, "pos": s.position_raw,
-                          "moving": s.moving} for d, s in zip(self.lift._drivers, statuses)]}
+        return {"target": int(target), "sent": True}
 
     def lift_home(self, speed: int | None = None) -> dict:
         return self.lift_move(LIFT_HOME_RAW, speed=speed)
@@ -128,10 +128,10 @@ class ActuatorHub:
     # ------------------------------------------------------------------
 
     def rod_move(self, target: int) -> dict:
+        # 同升降：只下发定位指令立即返回，位置由状态轮询刷新。
         with self._bus10_lock:
             self.rod.move_to(int(target), feedback=True)
-            position = self.rod.wait_until_stopped(target=int(target), timeout_s=15.0)
-        return {"pos": position}
+        return {"target": int(target), "sent": True}
 
     def rod_home(self) -> dict:
         return self.rod_move(ROD_HOME)
