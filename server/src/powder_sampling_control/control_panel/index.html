@@ -30,8 +30,46 @@
   }
   .estop-btn:active { transform: scale(0.97); }
   main {
-    max-width: 1180px; margin: 18px auto; padding: 0 16px;
+    flex: 1 1 auto; min-width: 0; max-width: 1180px; margin: 18px 12px 18px 6px; padding: 0 8px;
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  /* 左侧固定分栏：导航 + 标定表健康度，长页面不用来回滚 */
+  .shell { display: flex; align-items: flex-start; max-width: 1460px; margin: 0 auto; }
+  .sidebar {
+    position: sticky; top: 74px; flex: 0 0 198px; width: 198px;
+    max-height: calc(100vh - 92px); overflow-y: auto;
+    margin: 18px 0 18px 14px; padding: 14px 12px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  }
+  .side-title { font-size: 12px; color: var(--muted); letter-spacing: 1px; margin: 0 0 8px 6px; }
+  .side-nav { display: flex; flex-direction: column; gap: 2px; }
+  .side-nav a {
+    display: block; padding: 8px 10px; border-radius: 8px; color: var(--text);
+    text-decoration: none; font-size: 13px; border-left: 3px solid transparent;
+  }
+  .side-nav a:hover { background: var(--chip); }
+  .side-nav a.active {
+    background: #eff4ff; color: var(--accent);
+    border-left-color: var(--accent); font-weight: 600;
+  }
+  .side-nav a .num { color: var(--muted); font-size: 11px; margin-right: 6px; }
+  .side-nav a.warn-dot::after {
+    content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--danger); margin-left: 6px; vertical-align: middle;
+  }
+  .side-foot {
+    margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line);
+    font-size: 11px; color: var(--muted); line-height: 1.6;
+  }
+  .side-badge {
+    background: var(--chip); border-radius: 8px; padding: 8px 10px;
+    font-size: 12px; color: var(--text); margin-bottom: 8px; line-height: 1.5;
+  }
+  .side-badge b { color: var(--accent); }
+  section.card { scroll-margin-top: 78px; }
+  @media (max-width: 1080px) {
+    .sidebar { display: none; }
+    main { margin: 18px auto; }
   }
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: 12px;
@@ -44,10 +82,16 @@
   .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
   .row label { min-width: 68px; color: var(--muted); }
   input[type="range"] { flex: 1; min-width: 140px; }
-  input[type="number"], select {
+  input[type="number"], input[type="text"], select {
     width: 90px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
     font-size: 14px; background: #fff; color: var(--text);
   }
+  /* 标定点表格 */
+  table.cpts { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  table.cpts th, table.cpts td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--line); }
+  table.cpts th:first-child, table.cpts td:first-child { text-align: left; }
+  table.cpts th { color: var(--muted); font-weight: 500; }
+  table.cpts tr.bad td { color: var(--danger); }
   .val { min-width: 74px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
   button.op {
     border: 1px solid var(--line); background: #fff; color: var(--text);
@@ -63,6 +107,15 @@
   }
   .stat .k { font-size: 11px; color: var(--muted); }
   .stat .v { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  /* 天平大数字读数 */
+  .weigh { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; margin: 4px 0 2px; }
+  .weigh .big {
+    font-size: 44px; font-weight: 700; line-height: 1.1;
+    font-variant-numeric: tabular-nums; letter-spacing: -1px;
+  }
+  .weigh .big .unit { font-size: 18px; color: var(--muted); margin-left: 6px; font-weight: 500; }
+  .weigh .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .weigh .sub b { color: var(--text); font-size: 15px; }
   .moving { color: var(--warn); }
   .stopped { color: var(--accent-2); }
   .busy { opacity: 0.6; pointer-events: none; }
@@ -91,6 +144,26 @@
   <button class="estop-btn" id="btnEstop">⏹ 全部急停</button>
 </header>
 
+<div class="shell">
+<aside class="sidebar">
+  <div class="side-title">功能分栏</div>
+  <nav class="side-nav" id="sideNav">
+    <a href="#cardDisp"><span class="num">01</span>闭环加粉</a>
+    <a href="#cardCalib"><span class="num">02</span>粉末标定</a>
+    <a href="#cardCalibMgmt" id="navCalibMgmt"><span class="num">03</span>标定管理</a>
+    <a href="#cardLift"><span class="num">04</span>升降电机</a>
+    <a href="#cardRod"><span class="num">05</span>推杆</a>
+    <a href="#cardStir"><span class="num">06</span>旋转搅拌</a>
+    <a href="#cardBal"><span class="num">07</span>天平</a>
+    <a href="#cardSig"><span class="num">08</span>振动给料</a>
+  </nav>
+  <div class="side-foot">
+    <div class="side-badge" id="sideCalibBadge">标定表：加载中…</div>
+    标定表里的无效点（速率为 0、CV 过大）会污染前馈插值，
+    在「标定管理」里删掉后曲线会立即按剩下的点重算。
+  </div>
+</aside>
+
 <main>
   <!-- 双机同步告警横幅（锁存，确认后才消失） -->
   <div class="alarm" id="syncAlarm">
@@ -99,14 +172,227 @@
     <button class="op" id="btnSyncAck">确认恢复</button>
   </div>
 
+  <!-- 闭环加粉 -->
+  <section class="card wide" id="cardDisp">
+    <h2>闭环加粉 <span class="tag">dispensing_algorithm · 天平闭环 · 振动+推杆</span></h2>
+    <div class="desc">算法层原样复用（观测进、决策出），这里是硬件绑定层：天平质量 → 运动观测器 → <b>振幅闭环 v6</b>（延迟补偿 + 事件驱动：纯滞后 τ 与落料周期 T 从落料阶跃在线估计，判据只看「上次调幅 + τ」之后的生效窗；速率正在回升时先等——上一发的效果还在路上不叠加；有流量只微调 <b>标定振幅 ±0.2V</b>，偏慢 3s 起进<b>丝滑爬坡</b>（标定±0.5V 带内：有出粉 +0.08V/4s、速率为0 +0.12V/3s，<b>有出粉绝不脉冲冲击</b>）；整个生效窗一粒粉没落 = 卡粉/断料，快加/粗加<b>爬到带顶仍断料才踢一脚</b>救济（振幅瞬间抬到 <b>标定+1V</b> 持续 <b>0.5s</b> 后回落，一脚没踢开下一脚再 +0.5V），硬顶 <b>标定值 +1.5V</b>，到顶提示查料斗；慢加与慢加的踢脚规则不变，<b>追速率依旧禁止</b>，只有恢复出料的救济通道）+ 控制器（只做预测停车判定）。<b>三个阶段可以逐段配置你自己标定过的参数</b>：快加（大头：≤5000 到 75%、&gt;5000 冲到剩余 800mg，追速度不管稳不稳）→ 粗加（跟得上又不太毛躁）→ 慢加（低幅收尾、预测停车）。<b>推杆只在阶段入口开到该段开度，整段锁死不动，收尾也不复位</b>；<b>频率/占空比跟着所选粉末的标定走</b>（失水剂1 = 80Hz/22%，膨润土 = 80Hz/50%，没标定的粉才用默认 80Hz/50%）——换粉千万别忘了这组参数，它是速率曲线的前提。运行中振动与推杆由控制器接管，手动按钮全部锁定；「停止」与急停永远可用。目标 100–20000 mg，验收 ±10 mg。<b>切段沉降门</b>：切出速率高时先停振等余料落完再换段（搅拌和推杆保持不动），并把"停振后还落了多少"记进粉体档案，下次自动把切换点提前——重粉不加这一步，余料会把粗加/慢加顶穿。<b>「当前质量」从起振到收尾、结束以后一直实时读天平</b>（收尾沉降的那几秒也不再冻住），结束停稳后显示的就是最终净重。</div>
+    <div class="row">
+      <label>粉末</label>
+      <select id="dispPowder" style="min-width:240px; width:auto"><option value="">（不用标定 · 纯闭环）</option></select>
+      <span class="tag" id="dispPowderInfo">未选粉：搅拌全程 0，纯闭环对照</span>
+    </div>
+    <div class="row">
+      <label>目标质量</label>
+      <input type="number" id="dispTarget" min="100" max="20000" step="1" value="100">
+      <span class="tag">mg</span>
+      <label style="min-width:auto">粉体分类</label>
+      <select id="dispCategory">
+        <option value="Medium-flow" selected>Medium-flow（中流量）</option>
+        <option value="Low-flow">Low-flow（低流量）</option>
+        <option value="High-flow">High-flow（高流量）</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>起始振幅</label>
+      <input type="number" id="dispAmp" min="1" max="4" step="0.05" value="" placeholder="标定值">
+      <span class="tag">Vpp（留空 = 按该粉标定振幅；手填 = 手动覆盖。调幅带 = 标定±0.5V，自适应小步 0.05–0.15V；踢一脚必须已到带顶且顶上 4s 速率 &lt;1 mg/s；慢加不追速率）</span>
+      <label style="min-width:auto">尾部余量</label>
+      <input type="number" id="dispTail" min="0" max="50" step="0.5" placeholder="自动">
+      <span class="tag">mg（留空用算法默认）</span>
+    </div>
+    <div class="row">
+      <label>切段沉降门</label>
+      <input type="checkbox" id="dispGate" checked>
+      <span class="tag">切段前停振等余料落完（重粉必开）</span>
+      <label style="min-width:auto">触发速率</label>
+      <input type="number" id="dispGateRate" min="1" max="300" step="1" value="30">
+      <span class="tag">mg/s（低于它直接切）</span>
+      <label style="min-width:auto">提前降幅</label>
+      <input type="number" id="dispTaper" min="0" max="3" step="0.05" value="0.6">
+      <span class="tag">×当前速率（0=不提前降）</span>
+    </div>
+    <div class="row">
+      <label>缓补脉冲</label>
+      <input type="checkbox" id="dispTrim">
+      <span class="tag" title="开关默认跟随所选粉体档案的 trim_pulse 字段（换粉时自动带出）；手动勾选/取消 = 本次强制开/关。开了之后慢加剩 ≤触发剩余量 时停连续振动，改用信号发生器真脉冲一发一发凑到目标">慢加剩 ≤触发量 停连续振动，改脉冲补料凑到目标</span>
+      <label style="min-width:auto">触发剩余量</label>
+      <input type="number" id="dispTrimEnter" min="5" max="200" step="1" placeholder="40">
+      <span class="tag">mg（留空=默认40）</span>
+      <label style="min-width:auto">每发目标</label>
+      <input type="number" id="dispTrimPulse" min="3" max="50" step="1" placeholder="10">
+      <span class="tag">mg/发（留空=默认10）</span>
+    </div>
+
+    <div class="row" style="margin-top:6px">
+      <label>三阶段配方</label>
+      <button class="op gray" id="btnDispPlan">按标定表重算</button>
+      <span class="tag" id="dispPlanInfo">–</span>
+    </div>
+    <div id="dispStages" style="display:grid; grid-template-columns:70px 46px 96px 96px 88px 108px 84px 88px 84px; gap:6px; align-items:center; font-size:12px; margin:4px 0 8px">
+      <span style="color:var(--muted,#7a8ba3)">阶段</span>
+      <span style="color:var(--muted,#7a8ba3)">启用</span>
+      <span style="color:var(--muted,#7a8ba3)">搅拌 RPM</span>
+      <span style="color:var(--muted,#7a8ba3)">推杆开度</span>
+      <span style="color:var(--muted,#7a8ba3)">振幅 Vpp</span>
+      <span style="color:var(--muted,#7a8ba3)">目标速率 mg/s</span>
+      <span style="color:var(--muted,#7a8ba3)">占空比 %</span>
+      <span style="color:var(--muted,#7a8ba3)">加到 mg</span>
+      <span style="color:var(--muted,#7a8ba3)" title="这一段切到下一段之前，停振等余料落完的最长秒数（留空=默认 1.2，0=不等）">沉降等 s</span>
+
+      <span class="sname">快加</span>
+      <input type="checkbox" class="s-en" data-stage="fast" checked>
+      <input type="number" class="s-stir" data-stage="fast" min="0" max="1500" step="10" style="width:100%">
+      <input type="number" class="s-rod" data-stage="fast" min="20" max="1200" step="5" style="width:100%">
+      <input type="number" class="s-amp" data-stage="fast" min="1" max="4" step="0.05" style="width:100%" placeholder="自动">
+      <input type="number" class="s-rate" data-stage="fast" min="0.1" max="300" step="0.1" style="width:100%" placeholder="75" title="留空 = 默认 75 mg/s（按它从标定表挑工作点：转速和推杆开度都照抄那一点，推杆整段锁死）">
+      <input type="number" class="s-duty" data-stage="fast" min="5" max="50" step="1" style="width:100%">
+      <input type="number" class="s-switch" data-stage="fast" min="1" step="1" style="width:100%" placeholder="—">
+      <input type="number" class="s-settle" data-stage="fast" min="0" max="5" step="0.1" style="width:100%" placeholder="1.2">
+
+      <span class="sname">粗加</span>
+      <input type="checkbox" class="s-en" data-stage="coarse" checked>
+      <input type="number" class="s-stir" data-stage="coarse" min="0" max="1500" step="10" style="width:100%">
+      <input type="number" class="s-rod" data-stage="coarse" min="20" max="1200" step="5" style="width:100%">
+      <input type="number" class="s-amp" data-stage="coarse" min="1" max="4" step="0.05" style="width:100%" placeholder="自动">
+      <input type="number" class="s-rate" data-stage="coarse" min="0.1" max="300" step="0.1" style="width:100%" placeholder="20" title="留空 = 默认 20 mg/s">
+      <input type="number" class="s-duty" data-stage="coarse" min="5" max="50" step="1" style="width:100%">
+      <input type="number" class="s-switch" data-stage="coarse" min="1" step="1" style="width:100%" placeholder="—">
+      <input type="number" class="s-settle" data-stage="coarse" min="0" max="5" step="0.1" style="width:100%" placeholder="1.2">
+
+      <span class="sname">慢加</span>
+      <input type="checkbox" class="s-en" data-stage="slow" checked disabled title="收尾段，不可关闭">
+      <input type="number" class="s-stir" data-stage="slow" min="0" max="1500" step="10" style="width:100%">
+      <input type="number" class="s-rod" data-stage="slow" min="20" max="1200" step="5" style="width:100%">
+      <input type="number" class="s-amp" data-stage="slow" min="1" max="4" step="0.05" style="width:100%" placeholder="自动">
+      <input type="number" class="s-rate" data-stage="slow" min="0.1" max="300" step="0.1" style="width:100%" placeholder="5" title="留空 = 默认 5 mg/s">
+      <input type="number" class="s-duty" data-stage="slow" min="5" max="50" step="1" style="width:100%">
+      <input type="number" class="s-switch" data-stage="slow" min="1" step="1" style="width:100%" placeholder="收尾">
+      <input type="number" class="s-settle" data-stage="slow" min="0" max="5" step="0.1" style="width:100%" placeholder="—" disabled title="最后一段之后不再切段，沉降由收尾称重负责">
+    </div>
+    <div style="font-size:11px;color:var(--muted,#7a8ba3);margin-bottom:6px" id="dispPlanHint">
+      切换点规则：目标 &gt; 5000 时快加迅速冲到「剩余 800mg」直接切粗加，粗加到剩余 100mg；1000–5000 时快加到 75%、粗加到 95%（5% 超过 100mg 则到剩余 100mg）；≤ 1000 只用粗加+慢加；&lt; 300 时粗加只到「目标−40mg」，保证慢加段有 40mg 以上可调。<b>目标速率留空 = 快加 75 / 粗加 20 / 慢加 5 mg/s</b>，这三个数只是「从标定表挑工作点」的靶子：挑中哪个标定点，就用它的<b>搅拌转速和推杆开度</b>，<b>推杆整段锁死、绝不用来调速</b>，速率只由<b>振幅</b>负责（闭环 v6：τ 纯滞后与落料周期 T 由落料阶跃在线估计，判据只看「上次调幅 + τ」之后的生效窗；速率正在回升 = 上一发还在生效，先等不叠加）：有流量只在<b>标定振幅 ±0.2V</b> 微调，偏慢 3s 起进<b>丝滑爬坡</b>（标定±0.5V 带内：有出粉 +0.08V/4s、速率为0 +0.12V/3s——"速度小了就先加到 2.58 慢慢变，速度为 0 就加到 2.62"，<b>有出粉绝不脉冲冲击</b>）；<b>整个生效窗一粒粉没落 = 卡粉/断料</b>，快加/粗加<b>爬到带顶仍断料才踢一脚</b>救济（振幅瞬间抬 标定+1V 持续 0.5s 后回落标定值，一脚没踢开下一脚 +0.5V），硬顶「标定值 +1.5V」（实测起振门槛可能高于标定振幅），到顶仍不出料就在日志里提示查料斗；<b>慢加不追速率</b>——偏慢就按实际速率收，只有真卡粉才走救济；<b>慢加连续振幅最高 标定+0.5V</b>（设 2V 就最多 2.5V，起振门槛记忆不再抬慢加起步），踢脚是 0.5s 脉冲、踢完回落。慢加段的目标速率是动态的（剩余量 ÷ 18s，越接近目标越慢）。<b>缓补（trim pulse，开关 = 页面「缓补脉冲」勾选框，换粉时自动带出档案里的 trim_pulse 字段，可手动强制开/关）</b>：慢加剩余量进入最后触发剩余量区间（默认 20–40mg）时停掉连续振动，改为 ≈每发目标（默认 10mg）/发的<b>真脉冲</b>（信号发生器猝发输出：设好个数 WP1s 触发，设备数完自动停，指令失败自动降级软件定时）→ 关振等落定称重 → 自适应下一发时长，一发一发凑到目标；某发完全没出粉就振幅 +0.5V 试探（最高 4V）并把下一发缩到最短；慢加速率浮动小、落点本来就准的粉（如膨润土、封堵剂1）不必开。
+    </div>
+    <div style="font-size:11px;color:var(--muted,#7a8ba3);margin-bottom:6px" id="dispPoints">标定点：—</div>
+
+    <div class="row">
+      <button class="op primary" id="btnDispStart">开始加粉</button>
+      <button class="op" id="btnDispStop">停止加粉</button>
+      <span class="tag" id="dispState">空闲</span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <div style="flex:1; background:var(--chip,#eef2f8); border-radius:6px; height:10px; overflow:hidden;">
+        <div id="dispBar" style="height:100%; width:0%; background:var(--accent,#2563eb); transition:width .2s"></div>
+      </div>
+      <span class="val" id="dispPct" style="min-width:56px">0%</span>
+    </div>
+    <div class="status-grid">
+      <div class="stat"><div class="k">当前质量</div><div class="v" id="dispMass">–</div></div>
+      <div class="stat"><div class="k">流量 mg/s</div><div class="v" id="dispRate">–</div></div>
+      <div class="stat"><div class="k">振幅 Vpp</div><div class="v" id="dispAmpLive">–</div></div>
+      <div class="stat"><div class="k">阶段</div><div class="v" id="dispStage">–</div></div>
+      <div class="stat"><div class="k">已用 / 剩余</div><div class="v" id="dispTime">–</div></div>
+    </div>
+    <div id="dispResult" style="display:none; margin-top:10px; padding:10px 12px; border-radius:8px; background:var(--chip,#eef2f8);"></div>
+  </section>
+
+  <!-- 粉末前馈标定 -->
+  <section class="card wide" id="cardCalib">
+    <h2>粉末标定（开环前馈） <span class="tag">速率表 → 粉体库 feedforward_v2</span></h2>
+    <div class="desc">选粉末 → 设定<b>搅拌转速</b>和<b>推杆开度</b>（各填你自己的一个值）→ 开环喷 T 秒，用<b>振动期间的天平斜率</b>算出这种粉在这个工况下能出多少粉。结果写进 <b>data/powder_library/&lt;粉名&gt;.json</b>，闭环加粉时按阶段目标速率去这张表里<b>挑工作点</b>——挑中哪个点，<b>搅拌转速和推杆开度都照抄它</b>，推杆整段锁死、速率只靠振幅调。<b>每个点都会记下当时的频率 / 占空比 / 振幅</b>，每次标定另存一份 <b>runs/calib_*.json</b> 便于逐点对账。<b>频率和占空比按粉记住</b>：选已标定的粉会自动填成它当初那组（如失水剂1 是 80Hz/22%、膨润土 80Hz/50%），闭环加粉也按这组下发。<b>标定会真实出粉</b>：默认 1 点、每点 20 秒（新粉默认方波 80Hz / 50% / 2Vpp，搅拌 100 RPM / 推杆 600），含沉降约 45 秒。多点扫描会按点数累加时间与出粉量。</div>
+    <div class="row">
+      <label>粉末</label>
+      <select id="calibPowder" style="min-width:260px; width:auto"><option value="">加载中…</option></select>
+      <button class="op gray" id="btnPowderReload">刷新列表</button>
+      <span class="tag" id="calibPowderInfo">–</span>
+    </div>
+    <div class="row">
+      <label>新建粉末</label>
+      <input type="text" id="newPowderName" placeholder="输入新粉末名称" style="width:190px">
+      <select id="newPowderCategory" style="width:auto">
+        <option value="">分类（可选）</option>
+        <option value="Low-flow">Low-flow（低流量）</option>
+        <option value="Medium-flow">Medium-flow（中流量）</option>
+        <option value="High-flow">High-flow（高流量）</option>
+      </select>
+      <button class="op gray" id="btnPowderCreate">添加档案</button>
+      <span class="tag">只建空档案，标定数据另算</span>
+    </div>
+    <div class="row">
+      <label>搅拌转速</label>
+      <input type="number" id="calibStir" min="0" max="1500" step="10" value="100" style="width:110px">
+      <span class="tag">RPM（0 = 不搅）</span>
+      <label style="min-width:auto">推杆开度</label>
+      <input type="number" id="calibRod" min="20" max="1200" step="10" value="600" style="width:110px">
+      <span class="tag">units</span>
+      <span class="tag" id="calibGrid">共 1 点</span>
+    </div>
+    <div class="desc" style="margin:0 0 8px">填你要跑的那个工况就行，不分挡位。想对比几个值就用逗号分隔（如搅拌 <b>300,600</b>、开度 <b>150,300</b>），会按「搅拌 × 开度」逐点测。</div>
+    <div class="row">
+      <label>频率</label>
+      <input type="number" id="calibFreq" min="10" max="80" step="1" value="80">
+      <span class="tag">Hz</span>
+      <label style="min-width:auto">占空比</label>
+      <input type="number" id="calibDuty" min="5" max="50" step="1" value="50">
+      <span class="tag">%</span>
+      <label style="min-width:auto">振幅</label>
+      <input type="number" id="calibAmp" min="0.01" max="20" step="0.05" value="2">
+      <span class="tag">Vpp</span>
+      <label style="min-width:auto">每点</label>
+      <input type="number" id="calibDur" min="2" max="30" step="1" value="20">
+      <span class="tag">秒</span>
+    </div>
+    <div class="row">
+      <button class="op primary" id="btnCalibStart">开始标定</button>
+      <button class="op" id="btnCalibStop">停止标定</button>
+      <span class="tag" id="calibState">空闲</span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <div style="flex:1; background:var(--chip,#eef2f8); border-radius:6px; height:10px; overflow:hidden;">
+        <div id="calibBar" style="height:100%; width:0%; background:var(--accent,#2563eb); transition:width .2s"></div>
+      </div>
+      <span class="val" id="calibPct" style="min-width:70px">0/0 点</span>
+    </div>
+    <div class="status-grid">
+      <div class="stat"><div class="k">当前点</div><div class="v" id="calibPoint">–</div></div>
+      <div class="stat"><div class="k">阶段</div><div class="v" id="calibPhase">–</div></div>
+      <div class="stat"><div class="k">本点用时</div><div class="v" id="calibElapsed">–</div></div>
+      <div class="stat"><div class="k">最近速率</div><div class="v" id="calibLastRate">–</div></div>
+    </div>
+    <div id="calibPoints" style="margin-top:10px;font-size:12px;color:var(--muted,#7a8ba3)">尚未标定。选好粉末、确认秤上清空后点「开始标定」。</div>
+  </section>
+
+  <!-- 标定管理 -->
+  <section class="card wide" id="cardCalibMgmt">
+    <h2>标定管理 <span class="tag">删无效标定点 · 立即重算前馈表</span></h2>
+    <div class="desc">标定表里有的点根本不能用：料斗搭桥/没料测出来的<b>速率 0</b>、曲线抖动过大的 <b>CV &gt; 40%</b>、天平被碰导致的负速率——这些点留在表里会把「挑工作点」带歪（加粉时可能挑到塌料点，转速和开度都是错的）。<b>这里按点删</b>，删完马上重算三阶段搅拌转速与速率区间（<b>档案里其它历史字段不动</b>）。<b>红色行 = 判为不可信</b>（右侧给出原因）。注意：<b>runs/calib_*.json 里的历史归档不会跟着删</b>，那是原始记录，删了没法对账。</div>
+    <div class="row">
+      <label>粉末</label>
+      <select id="mgmtPowder" style="min-width:280px; width:auto"><option value="">加载中…</option></select>
+      <button class="op gray" id="btnMgmtReload">刷新</button>
+      <span class="tag" id="mgmtInfo">–</span>
+    </div>
+    <div class="row">
+      <button class="op gray" id="btnMgmtSelectBad">勾选全部不可信</button>
+      <button class="op gray" id="btnMgmtClearSel">取消勾选</button>
+      <button class="op primary" id="btnMgmtDelete">删除勾选点</button>
+      <button class="op" id="btnMgmtDeleteBad">一键删全部不可信</button>
+      <button class="op" id="btnMgmtWipe" style="color:var(--danger);border-color:var(--danger)">清空该粉全部标定</button>
+      <span class="tag" id="mgmtSelInfo">已选 0 点</span>
+    </div>
+    <div id="mgmtPoints" style="margin-top:8px;font-size:12px;color:var(--muted,#7a8ba3)">选一种粉末查看它的标定点。</div>
+  </section>
+
   <!-- 升降电机 -->
   <section class="card" id="cardLift">
     <h2>升降电机（双机同步） <span class="tag">MD30 ×2 · COM10 · 广播 0x00</span></h2>
-    <div class="desc">两台同款电缸必须同时运动：广播一帧同发 + 起跳监督 + 运行中偏差看门狗（超限自动急停）。行程 20–980（≈0–30mm）。速度固定 10，不可调。</div>
+    <div class="desc">两台同款电缸必须同时运动：广播一帧同发 + 起跳监督 + 运行中偏差看门狗（超限自动急停）。行程 20–910（≈0–28mm）。速度固定 8，不可调。<b>搅拌电机运行时禁止升降运动</b>（后端硬拦截，页面按钮同时置灰）。</div>
+    <div class="desc" id="liftInterlock" style="display:none; color:var(--warn,#e6a23c);">
+      ⚠ 搅拌正在运行，升降运动已被锁定：请先停搅拌，等实时转速归零。
+    </div>
     <div class="row">
       <label>目标位置</label>
-      <input type="range" id="liftTarget" min="20" max="980" step="1" value="33">
-      <input type="number" id="liftTargetNum" min="20" max="980" value="33">
+      <input type="range" id="liftTarget" min="20" max="910" step="1" value="33">
+      <input type="number" id="liftTargetNum" min="20" max="910" value="33">
       <span class="val" id="liftTargetMm">≈1.0mm</span>
     </div>
     <div class="row">
@@ -126,7 +412,7 @@
   <!-- 推杆 LA -->
   <section class="card" id="cardRod">
     <h2>推杆 <span class="tag">因时 LA · COM10 · ID 3</span></h2>
-    <div class="desc">LA 私有协议（55 AA 帧）。行程 0–2000，中程约 0.6s，落点 ±1。</div>
+    <div class="desc">LA 私有协议（55 AA 帧）。行程 0–2000，中程约 0.6s，落点 ±1。位置只在动作后 8s 内实时刷新，平时每 10s 兜底读一次（把 COM10 总线让给升降双机）；要看即时值点「刷新」。</div>
     <div class="row">
       <label>目标位置</label>
       <input type="range" id="rodTarget" min="0" max="2000" step="1" value="500">
@@ -137,6 +423,7 @@
       <button class="op primary" id="btnRodMove">运动</button>
       <button class="op green" id="btnRodHome">回原位 (208)</button>
       <button class="op" id="btnRodStop">急停</button>
+      <button class="op" id="btnRodRefresh">刷新</button>
     </div>
     <div class="status-grid">
       <div class="stat"><div class="k">当前位置</div><div class="v" id="rodPos">–</div></div>
@@ -170,13 +457,47 @@
     <div class="row">
       <button class="op" id="btnStirStopDecel">减速停止</button>
       <button class="op" id="btnStirStopImm">立即停止</button>
-      <span class="tag">减速停 = 速度写 0 + 同一加速度曲线，acc 越小停越缓</span>
+      <button class="op" id="btnStirClearStall">解除堵转保护</button>
+      <span class="tag">减速停 = 速度写 0 + 同一加速度曲线，acc 越小停越缓；堵转保护是锁存的，故障位消了也要点一次解除才接受新指令</span>
     </div>
     <div class="status-grid">
       <div class="stat"><div class="k">实时转速</div><div class="v" id="stirRpmNow">–</div></div>
       <div class="stat"><div class="k">使能状态</div><div class="v" id="stirEn">–</div></div>
       <div class="stat"><div class="k">到位标志</div><div class="v" id="stirReach">–</div></div>
       <div class="stat"><div class="k">故障位</div><div class="v" id="stirErr">–</div></div>
+    </div>
+  </section>
+
+  <!-- 天平 AT8811C -->
+  <section class="card wide" id="cardBal">
+    <h2>天平（称重） <span class="tag">AT8811C · COM11 · Modbus RTU 9600</span></h2>
+    <div class="desc">1 count = 1 mg（320 g / 1 mg 型）。稳定位与零点带取自状态字。「去皮归零」直接写天平实时重量寄存器为 0：振动/搅拌/推杆/升降只要有一项在动就会被后端拒绝，因为清零会把正在变化的量当成皮重扣掉。</div>
+    <div class="weigh">
+      <div class="big"><span id="balG">–</span><span class="unit">g</span></div>
+      <div class="sub">
+        <b id="balMg">–</b> mg ·
+        <span id="balStable">–</span>
+      </div>
+    </div>
+    <div class="desc" id="balErr" style="display:none; color:var(--danger); margin:4px 0 8px;"></div>
+    <div class="row">
+      <label>目标质量</label>
+      <input type="number" id="balTarget" min="0" max="320000" step="1" value="100">
+      <span class="tag">mg</span>
+      <span class="val" id="balRemain" style="min-width:120px">–</span>
+    </div>
+    <div class="row">
+      <button class="op primary" id="btnBalTare">去皮归零</button>
+      <button class="op" id="btnBalBase">记录基准</button>
+      <button class="op gray" id="btnBalBaseClear">清除基准</button>
+      <button class="op green" id="btnBalStable">稳定采样</button>
+      <button class="op" id="btnBalRefresh">刷新</button>
+    </div>
+    <div class="status-grid">
+      <div class="stat"><div class="k">原始计数</div><div class="v" id="balRaw">–</div></div>
+      <div class="stat"><div class="k">基准 / Δ 增量</div><div class="v" id="balDelta">–</div></div>
+      <div class="stat"><div class="k">零点带</div><div class="v" id="balZero">–</div></div>
+      <div class="stat"><div class="k">刷新时间</div><div class="v" id="balAt">–</div></div>
     </div>
   </section>
 
@@ -194,9 +515,9 @@
     </div>
     <div class="row">
       <label>频率 Hz</label>
-      <input type="number" id="sigFreq" min="0.01" max="5000000" step="1" value="50">
+      <input type="number" id="sigFreq" min="0.01" max="5000000" step="1" value="80">
       <label style="min-width:auto">幅度 Vpp</label>
-      <input type="number" id="sigAmp" min="0.01" max="20" step="0.05" value="0.3">
+      <input type="number" id="sigAmp" min="0.01" max="20" step="0.05" value="2">
       <label style="min-width:auto">占空 %</label>
       <input type="number" id="sigDuty" min="0.1" max="99.9" step="0.1" value="50">
       <button class="op" id="btnSigApply">应用参数</button>
@@ -220,9 +541,19 @@
 
   <div id="log"></div>
 </main>
+</div>
 <script>
 const $ = id => document.getElementById(id);
+// 数字输入框 → 数字或 null（留空/非法一律当"自动"，由后端按标定表或预设决定）
+const numOrNull = id => {
+  const raw = $(id).value.trim();
+  if (raw === "") return null;
+  const v = parseFloat(raw);
+  return Number.isFinite(v) ? v : null;
+};
 const logBox = $("log");
+let lastLogKey = "", lastLogAt = 0;
+let lastErrorText = "";
 function log(msg, cls) {
   const t = new Date().toLocaleTimeString("zh-CN", {hour12: false});
   const line = document.createElement("div");
@@ -230,6 +561,16 @@ function log(msg, cls) {
   line.textContent = `[${t}] ${msg}`;
   logBox.appendChild(line);
   logBox.scrollTop = logBox.scrollHeight;
+  // 同步落盘：同一条消息 3 秒内只发一次，避免轮询报错刷爆日志文件。
+  const now = Date.now();
+  if (msg !== lastLogKey || now - lastLogAt > 3000) {
+    lastLogKey = msg; lastLogAt = now;
+    fetch("/api/log", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({message: msg, level: cls || "info"}),
+    }).catch(() => {});
+  }
 }
 
 async function api(path, body) {
@@ -241,6 +582,19 @@ async function api(path, body) {
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || resp.statusText);
   return data;
+}
+
+// 带沉降门参数的调用：后端若还是"没有这三个参数"的旧版本（改完还没重启），
+// 自动退回旧协议再试一次，免得页面刷新早于服务重启时计划/启动直接报错。
+async function apiGate(path, body) {
+  try {
+    return await api(path, body);
+  } catch (e) {
+    if (!/unexpected keyword|settle_gate|taper_factor/i.test(e.message)) throw e;
+    const { settle_gate, settle_gate_rate_mg_s, taper_factor,
+            trim_enabled, trim_enter_remain_mg, trim_pulse_target_mg, ...rest } = body;
+    return await api(path, rest);
+  }
 }
 
 let busy = false;
@@ -273,7 +627,7 @@ liftNum.addEventListener("change", () => liftSync("num"));
 
 $("btnLiftMove").onclick = () => withBusy("cardLift",
   () => api("/api/lift/move", {target: +liftNum.value}),
-  `升降指令已下发 → ${liftNum.value}（速度固定 10，下方状态实时刷新）`);
+  `升降指令已下发 → ${liftNum.value}（下方状态实时刷新）`);
 $("btnLiftHome").onclick = () => withBusy("cardLift",
   () => api("/api/lift/home", {}), "升降回原位指令已下发 → 33");
 $("btnLiftStop").onclick = () => withBusy("cardLift",
@@ -304,6 +658,8 @@ $("btnRodHome").onclick = () => withBusy("cardRod",
   () => api("/api/rod/home", {}), "推杆回原位指令已下发 → 208");
 $("btnRodStop").onclick = () => withBusy("cardRod",
   () => api("/api/rod/stop", {}), "推杆已急停（下次点运动会自动重新使能）");
+$("btnRodRefresh").onclick = () => withBusy("cardRod",
+  () => api("/api/rod/refresh", {}), "推杆状态已强制刷新");
 
 // ---------------- 搅拌 ----------------
 $("btnStirStart").onclick = () => withBusy("cardStir",
@@ -315,9 +671,16 @@ $("btnStirStopDecel").onclick = () => withBusy("cardStir",
   "搅拌减速停止中");
 $("btnStirStopImm").onclick = () => withBusy("cardStir",
   () => api("/api/stir/stop", {mode: "immediate"}), "搅拌已立即停止");
+$("btnStirClearStall").onclick = () => withBusy("cardStir",
+  () => api("/api/stir/clear-stall", {}), (r) => {
+    const a = r.after || {};
+    const ok = !a.stall && !a.stall_protected;
+    return `${ok ? "堵转保护已解除" : "堵转保护仍在"}（状态 ${r.before?.flags} → ${a.flags}）` +
+           (ok ? "" : "：可能是机械真的卡住了，先手转一下搅拌轴再试");
+  });
 
 // ---------------- 振动给料（QLS3600S） ----------------
-let currentWave = "sine";
+let currentWave = "square";   // 默认方波（占空比只对方波生效）
 function paintWaveButtons() {
   document.querySelectorAll("button.wave").forEach(btn => {
     const on = btn.dataset.wave === currentWave;
@@ -359,6 +722,720 @@ $("btnSigRun").onclick = () => withBusy("cardSig", () => {
   });
 }, r => `振动已启动：${r.waveform_name || ""} ${r.freq}Hz ${r.amp}Vpp，运行 ${r.requested_s}s 后自动关闭`);
 
+// ---------------- 天平（AT8811C） ----------------
+$("btnBalRefresh").onclick = () => withBusy("cardBal",
+  () => api("/api/bal/refresh", {}), r => `天平已刷新：${r.g} g（${r.stable ? "稳定" : "波动"}）`);
+$("btnBalTare").onclick = () => {
+  if (!confirm("去皮归零会把天平当前重量写成 0。\n执行前请确认秤盘状态是你想要的皮重（空盘或容器），且所有机构已停止。\n继续？")) return;
+  withBusy("cardBal", () => api("/api/bal/tare", {}),
+    r => `天平已去皮归零：清零前 ${r.tare_before_mg} mg → 现在 ${r.mg} mg`);
+};
+$("btnBalBase").onclick = () => withBusy("cardBal",
+  () => api("/api/bal/base", {}), r => `已记录基准 ${r.base.mg} mg（之后显示 Δ 增量）`);
+$("btnBalBaseClear").onclick = () => withBusy("cardBal",
+  () => api("/api/bal/base", {clear: true}), "基准已清除");
+$("btnBalStable").onclick = () => withBusy("cardBal",
+  () => api("/api/bal/stable", {timeout_s: 6, samples: 8}),
+  r => r.stable
+    ? `稳定采样完成：${r.mean_mg} mg（${r.samples} 个样本，标准差 ${r.sd_mg} mg，范围 ${r.min_mg}–${r.max_mg}）`
+    : `未在超时内判稳：均值 ${r.mean_mg} mg、标准差 ${r.sd_mg} mg（${r.samples} 个样本），请等读数稳定再试`);
+
+// ---------------- 闭环加粉 ----------------
+const DISP_STAGE_TEXT = {fast: "快加", coarse: "粗加", slow: "慢加", settle: "收尾判停", trim: "缓补"};
+const DISP_STAGE_ROWS = ["fast", "coarse", "slow"];
+function stageInput(name, cls) {
+  return document.querySelector(`#dispStages .${cls}[data-stage="${name}"]`);
+}
+// 读出三行表格 → 发给后端的 stages（空值不传，让后端用标定表默认值）
+function collectStages() {
+  return DISP_STAGE_ROWS.map(name => {
+    const num = cls => {
+      const el = stageInput(name, cls);
+      const v = el ? el.value.trim() : "";
+      return v === "" ? null : parseFloat(v);
+    };
+    const en = stageInput(name, "s-en");
+    return {
+      name,
+      enabled: en ? en.checked : true,
+      stir_rpm: num("s-stir"),
+      rod_units: num("s-rod"),
+      amplitude_vpp: num("s-amp"),
+      rate_mg_s: num("s-rate"),
+      duty_percent: num("s-duty"),
+      switch_mass_mg: num("s-switch"),
+      settle_wait_s: num("s-settle"),
+    };
+  });
+}
+// 切段沉降门参数（卡片级，三段共用）
+function dispGateParams() {
+  return {
+    settle_gate: $("dispGate").checked,
+    settle_gate_rate_mg_s: numOrNull("dispGateRate"),
+    taper_factor: numOrNull("dispTaper"),
+  };
+}
+// 缓补参数：开关总是显式传（勾选框在换粉时已按档案带出，页面值就是本次的最终值）；
+// 两个数值留空 = 后端默认（触发剩余 40mg、每发 10mg）
+function dispTrimParams() {
+  return {
+    trim_enabled: $("dispTrim").checked,
+    trim_enter_remain_mg: numOrNull("dispTrimEnter"),
+    trim_pulse_target_mg: numOrNull("dispTrimPulse"),
+  };
+}
+// 后端算好的计划 → 回填表格（三行都先清空，避免上一轮的残留值）
+function fillStages(plan) {
+  for (const name of DISP_STAGE_ROWS) {
+    const en = stageInput(name, "s-en");
+    if (en && name !== "slow") en.checked = false;
+    for (const cls of ["s-stir", "s-rod", "s-amp", "s-rate", "s-duty", "s-switch", "s-settle"]) {
+      const el = stageInput(name, cls);
+      if (el) el.value = "";
+    }
+    const amp = stageInput(name, "s-amp");
+    if (amp) amp.placeholder = "自动";
+  }
+  for (const item of plan || []) {
+    const en = stageInput(item.stage, "s-en");
+    if (en) en.checked = true;
+    const put = (cls, value) => {
+      const el = stageInput(item.stage, cls);
+      if (el) el.value = (value === null || value === undefined) ? "" : value;
+    };
+    put("s-stir", Math.round(item.stir_rpm));
+    put("s-rod", item.rod_ff);
+    // 振幅留空 = 自动（切段时按上一段实测速率比例预置），建议值只放 placeholder：
+    // 如果直接回填成具体值，切段后就变成"显式振幅"，反而丢掉了自动预置的快速收敛。
+    const ampEl = stageInput(item.stage, "s-amp");
+    if (ampEl) ampEl.placeholder = `自动 ${item.amplitude_vpp}`;
+    put("s-rate", item.rate_mg_s);
+    put("s-duty", item.duty_seed_pct);
+    put("s-switch", item.switch_mass_mg);
+    put("s-settle", item.settle_wait_s);
+  }
+}
+let dispPlanTimer = null;
+async function refreshDispPlan(fill) {
+  const target = parseInt($("dispTarget").value, 10);
+  const info = $("dispPlanInfo");
+  if (!Number.isFinite(target) || target < 100 || target > 20000) {
+    info.textContent = "目标质量需在 100–20000 mg";
+    info.style.color = "var(--danger,#dc2626)";
+    return;
+  }
+  try {
+    const r = await apiGate("/api/dispense/plan", {
+      target_mg: target,
+      powder: $("dispPowder").value || null,
+      category: $("dispCategory").value,
+      amplitude_vpp: numOrNull("dispAmp"),
+      tail_mass_mg: $("dispTail").value === "" ? null : parseFloat($("dispTail").value),
+      stages: fill ? null : collectStages(),   // 手动重算=用标定表；切目标=沿用当前表
+      ...dispGateParams(),
+    });
+    if (fill) fillStages(r.plan);
+    const pts = (r.calibration_points || []);
+    $("dispPoints").textContent = pts.length
+      ? "标定点（可直接抄进上表）：" + pts.map(p =>
+          `${Math.round(p.stir_rpm)}rpm/${p.rod_units}→${p.rate_mg_s}mg/s` +
+          (p.cv_pct > 40 ? `(CV${p.cv_pct}%不可信)` : "")).join("　")
+      : "标定点：无（未选粉或该粉没标定，将用预设种子跑纯闭环）";
+    const parts = (r.plan || []).map(p => {
+      const mr = p.matched_rate_mg_s;
+      const off = mr ? Math.abs(mr - p.rate_mg_s) / Math.max(0.1, p.rate_mg_s) : 0;
+      // 目标速率被"该工作点实际能力"钳过时，原值要显示出来，否则操作员会以为
+      // 自己填的 75 在生效。例：封堵剂1 快加 200rpm/700 标定 49.1 mg/s，
+      // 目标 75 会按 56.5 执行（49.1×1.15）。
+      const capNote = (p.rate_capped_from !== null && p.rate_capped_from !== undefined)
+        ? `<s>${p.rate_capped_from}</s>→${p.rate_mg_s}mg/s(超能力)` : `${p.rate_mg_s}mg/s`;
+      return `${p.stage_text} ${p.switch_mass_mg === null ? `${r.target_mg}` : p.switch_mass_mg}mg` +
+        (p.switch_compensation_mg ? `(已提前${p.switch_compensation_mg})` : "") +
+        `（${capNote} · 搅${Math.round(p.stir_rpm)} · 杆${p.rod_ff} · 幅${p.amplitude_vpp}V · ${p.duty_seed_pct}%` +
+        // 标定表里没有接近本段目标速率的点时才亮出来，提醒这段可能打不到
+        (mr !== null && mr !== undefined && off > 0.3
+          ? ` · 标定最近仅 ${mr}mg/s` : "") + `）`;
+    });
+    info.style.color = "var(--muted,#7a8ba3)";
+    const sigSrc = r.signal_source === "powder" ? "该粉标定" : "默认";
+    const gate = r.settle_gate || {};
+    info.textContent = `${r.calibrated ? "按标定表" : "无标定，按预设"} · ` +
+      `振动 ${fmtNum(r.frequency_hz, 0)}Hz/${fmtNum(r.duty_percent, 0)}%（${sigSrc}） · ` +
+      `沉降门 ${gate.enabled === false ? "关" : `开≥${fmtNum(gate.rate_mg_s, 0)}mg/s`} · ` +
+      `预计 ${r.estimated_s}s · ` + parts.join(" → ");
+  } catch (e) {
+    info.style.color = "var(--danger,#dc2626)";
+    info.textContent = `计划计算失败：${e.message}`;
+  }
+}
+function scheduleDispPlan(fill) {
+  clearTimeout(dispPlanTimer);
+  dispPlanTimer = setTimeout(() => refreshDispPlan(fill), 350);
+}
+$("btnDispPlan").onclick = () => refreshDispPlan(true);
+$("dispTarget").addEventListener("change", () => scheduleDispPlan(true));
+$("dispPowder").addEventListener("change", () => scheduleDispPlan(true));
+$("dispCategory").addEventListener("change", () => scheduleDispPlan(true));
+$("btnDispStart").onclick = () => {
+  const target = parseInt($("dispTarget").value, 10);
+  const tail = $("dispTail").value;
+  const powder = $("dispPowder").value;
+  const stages = collectStages().filter(s => s.enabled);
+  if (!stages.length) { log("三阶段至少要启用一段", "err"); return; }
+  const brief = stages.map(s =>
+    `${DISP_STAGE_TEXT[s.name]}：搅 ${s.stir_rpm ?? "自动"} / 杆 ${s.rod_units ?? "自动"} / ` +
+    `幅 ${s.amplitude_vpp ?? "自动"}V / ` +
+    `${s.rate_mg_s ?? "自动"} mg/s / ${s.duty_percent ?? "自动"}% / ` +
+    `加到 ${s.switch_mass_mg ?? "收尾"} mg` +
+    (s.settle_wait_s === null ? "" : ` / 沉降等 ${s.settle_wait_s}s`)).join("\n");
+  const gate = dispGateParams();
+  const trim = dispTrimParams();
+  const gateText = gate.settle_gate
+    ? `切段沉降门：开（切出 ≥${gate.settle_gate_rate_mg_s ?? 30} mg/s 时停振等余料落完，`
+      + `提前 ${gate.taper_factor ?? 0.6}×速率降幅）\n`
+    : "切段沉降门：关（达标即刻切段）\n";
+  const trimText = trim.trim_enabled
+    ? `缓补：开（慢加剩 ≤${trim.trim_enter_remain_mg ?? 40}mg 停连续振动，`
+      + `改为 ≈${trim.trim_pulse_target_mg ?? 10}mg/发 的真脉冲补料凑到目标，0 出粉逐发抬幅试探）\n`
+    : "缓补：关（慢加直接判停收尾）\n";
+  if (!confirm(`开始闭环加粉：目标 ${target} mg\n` +
+      `粉末：${powder || "（不选粉，纯闭环）"}\n${brief}\n${gateText}${trimText}\n` +
+      `振幅：粗加/快加=丝滑爬坡——标定±0.5V 带内慢慢调，有出粉 +0.08V/4s、速率为0 +0.12V/3s，绝不脉冲冲击；爬到带顶仍断料才踢一脚（标定+1V×0.5s 回落）。慢加不追速率，连续振幅最高 标定+0.5V，只有真卡粉才踢一脚（0.5s 脉冲后回落）。\n` +
+      `推杆整段锁死、收尾不复位。\n` +
+      `运行中请勿手动操作振动/推杆/升降/搅拌。\n确认机构周围安全后继续？`)) return;
+  withBusy("cardDisp", () => apiGate("/api/dispense/start", {
+    target_mg: target,
+    category: $("dispCategory").value,
+    amplitude_vpp: numOrNull("dispAmp"),
+    tail_mass_mg: tail === "" ? null : parseFloat(tail),
+    powder: $("dispPowder").value || null,
+    stages,
+    ...gate,
+    ...trim,
+  }), `加粉已启动 → 目标 ${target} mg（下方实时刷新）`);
+};
+$("btnDispStop").onclick = () => withBusy("cardDisp",
+  () => api("/api/dispense/stop", {}), r => r.stopped ? "已请求停止加粉（正在停振并结算）" : "当前没有运行中的加粉任务");
+
+// ---------------- 粉末标定（开环前馈） ----------------
+let powderCache = [];
+let powderReadErrors = [];      // 读不出来的档案（权限/损坏），后端每轮上报，页面提示用
+let lastCalibPowder = "";       // 上一次填过标定表单的粉名，换粉时才覆盖振动参数
+let lastDispPowder = "";        // 同上，加粉表单的起始振幅
+function powderLabel(p) {
+  return `${p.powder_name}${p.calibrated ? ` · 已标定 ${p.points} 点` : " · 未标定"}`;
+}
+function currentPowder() {
+  const name = $("calibPowder").value;
+  return powderCache.find(p => p.powder_name === name) || null;
+}
+function refreshPowderInfo() {
+  const p = currentPowder();
+  const el = $("calibPowderInfo");
+  if (!p) { el.textContent = "–"; return; }
+  // 换粉时把标定表单的振动参数自动填成"这粉当初标定用的那一组"——
+  // 频率/占空比是每种粉自己的工作点，重标时沿用才不会把新旧点混成两套工况。
+  if (p.powder_name !== lastCalibPowder) {
+    lastCalibPowder = p.powder_name;
+    const sig = p.signal;
+    if (sig && sig.frequency_hz !== undefined && sig.duty_percent !== undefined) {
+      $("calibFreq").value = sig.frequency_hz;
+      $("calibDuty").value = sig.duty_percent;
+      if (sig.amplitude_vpp !== undefined) $("calibAmp").value = sig.amplitude_vpp;
+    }
+  }
+  if (!p.calibrated) {
+    el.textContent = `${p.category || "未分类"} · 尚无标定数据（加粉会退回纯闭环）`;
+    return;
+  }
+  const st = p.stage_stir_rpm || {};
+  const cf = p.correction_factor;
+  el.textContent = `${p.category || "未分类"} · ${p.points} 点 · ` +
+    `粗加 ${st.coarse ?? "–"} / 精加 ${st.fine ?? "–"} / 精修 ${st.precision ?? "–"} RPM` +
+    (p.signal ? ` · 标定振动 ${fmtNum(p.signal.frequency_hz, 0)}Hz/${fmtNum(p.signal.duty_percent, 0)}%/${fmtNum(p.signal.amplitude_vpp, 2)}Vpp` : "") +
+    (cf ? ` · 修正 ${cf.toFixed(2)}` : "");
+}
+async function loadPowders() {
+  try {
+    const r = await api("/api/powder/list", {});
+    powderCache = r.powders || [];
+    // 后端会把「读不出来的档案」单独报回来（权限/编码坏了/文件被独占）。
+    // 以前这些错误被静默跳过，页面只显示"粉体库为空"，看着像数据丢了。
+    const errs = Array.isArray(r.errors) ? r.errors : [];
+    powderReadErrors = errs;
+    if (errs.length) {
+      const perm = errs.filter(e => e.permission).length;
+      const names = errs.slice(0, 4).map(e => e.file).join("、");
+      log(`粉体库 ${errs.length} 个档案读不出来` +
+        (perm ? `（${perm} 个权限不足）` : "") + `：${names}` +
+        (errs.length > 4 ? " 等" : "") +
+        (powderCache.length ? "" : "；下拉框因此为空，档案文件还在，别重建"), "err");
+    }
+    const sel = $("calibPowder");
+    const prev = sel.value;
+    sel.innerHTML = powderCache.map(p =>
+      `<option value="${p.powder_name}">${powderLabel(p)}</option>`).join("") ||
+      `<option value="">${errs.length ? `（${errs.length} 个档案读不出来，见日志）` : "（粉体库为空）"}</option>`;
+    if (prev && powderCache.some(p => p.powder_name === prev)) sel.value = prev;
+    refreshPowderInfo();
+    // 加粉下拉只列"已标定"的粉：没标定的选了也拿不到前馈，等同纯闭环，列进来只会误导。
+    const dsel = $("dispPowder");
+    const dprev = dsel.value;
+    dsel.innerHTML = `<option value="">（不用标定 · 纯闭环）</option>` +
+      powderCache.filter(p => p.calibrated).map(p =>
+        `<option value="${p.powder_name}">${p.powder_name} · ${p.points} 点</option>`).join("");
+    if (dprev && Array.from(dsel.options).some(o => o.value === dprev)) dsel.value = dprev;
+    refreshDispPowderInfo();
+    refreshDispPlan(true);      // 粉体库就绪后按标定表回填三阶段配方
+    refreshMgmtPowders();       // 「标定管理」下拉 + 左侧分栏的健康度徽标
+  } catch (e) {
+    log(`粉体库加载失败: ${e.message}`, "err");
+  }
+}
+
+// 「标定管理」粉末下拉：列全部粉末（含未标定的，方便确认它确实是空的），
+// 已标定的后面带"不可信 N 点"，红色一眼看出来哪种粉需要清理。
+function refreshMgmtPowders() {
+  const sel = $("mgmtPowder");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = powderCache.map(p => {
+    const bad = p.unreliable_points || 0;
+    return `<option value="${p.powder_name}">${p.powder_name}` +
+      (p.calibrated ? ` · ${p.points} 点${bad ? `（不可信 ${bad}）` : ""}` : " · 未标定") +
+      `</option>`;
+  }).join("") || `<option value="">${powderReadErrors.length
+    ? `（${powderReadErrors.length} 个档案读不出来，见日志）` : "（粉体库为空）"}</option>`;
+  if (prev && powderCache.some(p => p.powder_name === prev)) sel.value = prev;
+  const calibrated = powderCache.filter(p => p.calibrated);
+  const badTotal = powderCache.reduce((sum, p) => sum + (p.unreliable_points || 0), 0);
+  const badge = $("sideCalibBadge");
+  if (badge) {
+    badge.innerHTML = `标定表：<b>${calibrated.length}</b> 种已标定粉 · ` +
+      `<b>${badTotal}</b> 点判为不可信`;
+  }
+  const nav = $("navCalibMgmt");
+  if (nav) nav.classList.toggle("warn-dot", badTotal > 0);
+  // 下拉内容变了但当前粉还在 → 保持显示；否则自动选第一种已标定的粉
+  const current = sel.value;
+  if (!current || !powderCache.some(p => p.powder_name === current)) {
+    const first = (calibrated[0] || powderCache[0] || {}).powder_name || "";
+    if (first) { sel.value = first; loadMgmt(first); }
+    else renderMgmt(null);
+  }
+}
+function refreshDispPowderInfo() {
+  const p = powderCache.find(x => x.powder_name === $("dispPowder").value);
+  const el = $("dispPowderInfo");
+  if (!p) { el.textContent = "未选粉：搅拌全程 0，纯闭环对照，振动按默认 80Hz/50%"; return; }
+  // 换粉时把「起始振幅」也填成这粉标定时用的那档（只在换粉那一下填，之后手改不再被覆盖）。
+  if (p.powder_name !== lastDispPowder) {
+    lastDispPowder = p.powder_name;
+    const amp = p.signal ? p.signal.amplitude_vpp : undefined;
+    if (amp !== undefined && amp >= 1 && amp <= 4) $("dispAmp").value = amp;
+    // 缓补开关同样跟随粉体档案（trim_pulse 字段）；换粉后手动勾/取消就是本次强制
+    $("dispTrim").checked = !!p.trim_pulse;
+  }
+  const st = p.stage_stir_rpm || {};
+  // 频率/占空比跟着粉走：这行是操作员确认"这次会用哪组振动参数"的唯一入口，
+  // 别只写搅拌转速——换粉后忘了改占空比，整条速率曲线都会偏。
+  const sig = p.signal || {};
+  const vib = (sig.frequency_hz !== undefined && sig.duty_percent !== undefined)
+    ? ` · 振动 ${fmtNum(sig.frequency_hz, 0)}Hz/${fmtNum(sig.duty_percent, 0)}%`
+    : " · 无标定信号（按默认 80Hz/50%）";
+  el.textContent = `${p.points} 点 · 快加 ${st.coarse ?? "–"} / 粗加 ${st.fine ?? "–"} / 慢加 ${st.precision ?? "–"} RPM${vib}`;
+}
+$("dispPowder").onchange = refreshDispPowderInfo;
+$("calibPowder").onchange = refreshPowderInfo;
+$("btnPowderReload").onclick = () => withBusy("cardCalib", loadPowders, "粉体库已刷新");
+
+// 标定工作点由页面上的两个输入框决定：搅拌一个值、推杆一个值，就是你要跑的那个工况。
+// 后端只给初值和允许范围，不再替操作员决定挡位；填逗号可以手动画小范围扫描。
+let calibOptions = {points: 1, duration_s: 20, frequency_hz: 80,
+                    duty_percent: 50, amplitude_vpp: 2,
+                    limits: {stir_min: 0, stir_max: 1500, rod_min: 20, rod_max: 1200}};
+function parseCalibList(text) {
+  return String(text || "").split(/[,，\s]+/).map(s => s.trim())
+    .filter(s => s !== "").map(Number);
+}
+function readCalibGrid() {
+  const lim = calibOptions.limits || {};
+  const stirs = parseCalibList($("calibStir").value);
+  const rods = parseCalibList($("calibRod").value);
+  if (!stirs.length) throw new Error("请填搅拌转速（不想搅就填 0）");
+  if (!rods.length) throw new Error("请填推杆开度");
+  const sLo = lim.stir_min ?? 0, sHi = lim.stir_max ?? 1500;
+  const rLo = lim.rod_min ?? 20, rHi = lim.rod_max ?? 1200;
+  for (const v of stirs) {
+    if (!Number.isFinite(v) || v < sLo || v > sHi)
+      throw new Error(`搅拌转速 ${v} 超出 ${sLo}–${sHi} RPM`);
+  }
+  for (const v of rods) {
+    if (!Number.isFinite(v) || v < rLo || v > rHi)
+      throw new Error(`推杆开度 ${v} 超出 ${rLo}–${rHi}`);
+  }
+  return {stirs, rods, points: stirs.length * rods.length};
+}
+function updateCalibGrid() {
+  try {
+    const g = readCalibGrid();
+    $("calibGrid").textContent = `共 ${g.points} 点`;
+    $("calibGrid").style.color = "var(--muted,#7a8ba3)";
+    return g;
+  } catch (e) {
+    $("calibGrid").textContent = e.message;
+    $("calibGrid").style.color = "var(--err,#dc2626)";
+    return null;
+  }
+}
+$("calibStir").oninput = updateCalibGrid;
+$("calibRod").oninput = updateCalibGrid;
+
+async function loadCalibOptions() {
+  try {
+    calibOptions = await api("/api/calib/options", {});
+    const lim = calibOptions.limits || {};
+    $("calibStir").min = lim.stir_min ?? 0;
+    $("calibStir").max = lim.stir_max ?? 1500;
+    $("calibRod").min = lim.rod_min ?? 20;
+    $("calibRod").max = lim.rod_max ?? 1200;
+    // 初值只在页面首次加载时写一次，之后完全以操作员填的为准
+    if (!$("calibStir").value) $("calibStir").value = (calibOptions.stir_levels || [100])[0];
+    if (!$("calibRod").value) $("calibRod").value = (calibOptions.rod_points || [600])[0];
+    // 频率/占空比是每种粉自己的工作点：已经选了已标定的粉就按它的来，
+    // 否则才用后端默认（80Hz/50%/2Vpp）。这样即使这里的默认值比粉体库晚到，
+    // 也不会把 refreshPowderInfo 刚填好的 22% 又盖回 50%。
+    const p = currentPowder();
+    const sig = (p && p.calibrated) ? (p.signal || null) : null;
+    $("calibFreq").value = (sig && sig.frequency_hz !== undefined)
+      ? sig.frequency_hz : (calibOptions.frequency_hz ?? 80);
+    $("calibDuty").value = (sig && sig.duty_percent !== undefined)
+      ? sig.duty_percent : (calibOptions.duty_percent ?? 50);
+    $("calibAmp").value = (sig && sig.amplitude_vpp !== undefined)
+      ? sig.amplitude_vpp : (calibOptions.amplitude_vpp ?? 2);
+    $("calibDur").value = calibOptions.duration_s ?? 20;
+    updateCalibGrid();
+  } catch (e) {
+    log(`标定默认参数加载失败: ${e.message}`, "err");
+  }
+}
+$("btnPowderCreate").onclick = () => {
+  const name = $("newPowderName").value.trim();
+  if (!name) { log("请先输入粉末名称", "err"); return; }
+  withBusy("cardCalib", async () => {
+    const r = await api("/api/powder/create", {
+      name, category: $("newPowderCategory").value || null,
+    });
+    await loadPowders();
+    $("calibPowder").value = r.name;
+    refreshPowderInfo();
+    $("newPowderName").value = "";
+    return r;
+  }, r => `已新建粉末「${r.name}」（档案 ${r.file}），可以直接标定它`);
+};
+
+$("btnCalibStart").onclick = () => {
+  const p = currentPowder();
+  if (!p) { log("请先选择粉末（列表为空就先刷新，或在上方新建一种）", "err"); return; }
+  let grid;
+  try { grid = readCalibGrid(); }
+  catch (e) { log(`工作点填得不对：${e.message}`, "err"); return; }
+  const points = grid.points;
+  const dur = parseFloat($("calibDur").value) || 6;
+  const stirs = grid.stirs.join(" / ");
+  const rods = grid.rods.join(" / ");
+  const overwrite = p.calibrated
+    ? `\n注意：该粉已有 ${p.points} 个标定点，同工况的新数据会覆盖旧值。` : "";
+  if (!confirm(`开始标定「${p.powder_name}」\n` +
+      `搅拌 ${stirs} RPM × 推杆开度 ${rods} = ${points} 点，每点 ${dur} 秒\n` +
+      `预计 ${(points * (dur + 8) / 60).toFixed(1)} 分钟，期间会真实出粉。\n` +
+      `请确认：秤已清空、料斗有粉、机构周围无人。${overwrite}\n\n继续？`)) return;
+  withBusy("cardCalib", () => api("/api/calib/start", {
+    name: p.powder_name,
+    category: p.category || null,
+    stir_levels: grid.stirs,
+    rod_points: grid.rods,
+    frequency_hz: parseFloat($("calibFreq").value),
+    duty_percent: parseFloat($("calibDuty").value),
+    amplitude_vpp: parseFloat($("calibAmp").value),
+    duration_s: dur,
+  }), r => `标定已启动：${r.total || points} 个点（下方进度实时刷新）`);
+};
+$("btnCalibStop").onclick = () => withBusy("cardCalib",
+  () => api("/api/calib/stop", {}),
+  r => r.stopped ? "已请求停止标定（正在停振并落盘已测点）" : "当前没有运行中的标定任务");
+
+// ---------------- 标定管理（删无效标定点） ----------------
+// 判定口径由后端给（point_issues）：速率为 0 / 出粉为 0 / CV>40% / 缺字段 → unreliable。
+// 前端只负责显示和收集要删的索引，不在浏览器里另判一套，免得两边对不上。
+let mgmtDetail = null;
+const mgmtSelected = new Set();
+
+function mgmtSelCount() { return mgmtSelected.size; }
+
+function mgmtSigText(point) {
+  const g = point.signal || {};
+  if (g.frequency_hz === undefined || g.frequency_hz === null) return "–";
+  return `${fmtNum(g.frequency_hz, 0)}Hz · ${fmtNum(g.duty_percent, 0)}% · ${fmtNum(g.amplitude_vpp, 2)}Vpp`;
+}
+
+function refreshMgmtSel() {
+  $("mgmtSelInfo").textContent = `已选 ${mgmtSelected.size} 点`;
+  document.querySelectorAll("#mgmtPoints input.mgmt-cb").forEach(cb => {
+    cb.checked = mgmtSelected.has(Number(cb.dataset.index));
+  });
+  const del = $("btnMgmtDelete");
+  if (del) del.disabled = mgmtSelected.size === 0;
+}
+
+function renderMgmt(detail) {
+  mgmtDetail = detail;
+  const box = $("mgmtPoints");
+  const info = $("mgmtInfo");
+  if (!detail) {
+    info.textContent = "–";
+    box.innerHTML = "选一种粉末查看它的标定点。";
+    refreshMgmtSel();
+    return;
+  }
+  const pts = detail.points || [];
+  const bad = detail.unreliable_points || 0;
+  const st = detail.stage_stir_rpm || {};
+  const sig = detail.signal || {};
+  const sigText = (sig.frequency_hz !== undefined && sig.duty_percent !== undefined)
+    ? ` · 生效振动 ${fmtNum(sig.frequency_hz, 0)}Hz/${fmtNum(sig.duty_percent, 0)}%/${fmtNum(sig.amplitude_vpp, 2)}Vpp`
+    : "";
+  info.textContent = pts.length
+    ? `${pts.length} 点 · 不可信 ${bad} 点 · 三阶段搅拌 ` +
+      `${Math.round(st.coarse || 0)} / ${Math.round(st.fine || 0)} / ${Math.round(st.precision || 0)} RPM` + sigText
+    : "该粉还没有标定数据";
+  info.style.color = bad > 0 ? "var(--danger,#dc2626)" : "var(--muted,#7a8ba3)";
+  if (!pts.length) {
+    box.innerHTML = "该粉还没有标定数据（加粉会退回纯闭环）。";
+    refreshMgmtSel();
+    return;
+  }
+  let html = `<table class="cpts"><thead><tr>
+    <th style="width:28px"><input type="checkbox" id="mgmtCbAll"></th>
+    <th>标定时间</th><th>搅拌 RPM</th><th>推杆开度</th><th>振动参数</th>
+    <th>速率 mg/s</th><th>CV %</th><th>出粉 mg</th><th>判定</th></tr></thead><tbody>`;
+  for (let i = 0; i < pts.length; i += 1) {
+    const p = pts[i];
+    const index = (p.index === undefined || p.index === null) ? i : p.index;
+    const issues = p.issues || [];
+    const where = p.issues === undefined
+      ? "–"
+      : (issues.length
+        ? `<span style="color:var(--danger,#dc2626)">不可信：${issues.join("、")}</span>`
+        : `<span style="color:var(--accent-2,#059669)">可用</span>`);
+    html += `<tr class="${issues.length ? "bad" : ""}">
+      <td><input type="checkbox" class="mgmt-cb" data-index="${index}"></td>
+      <td style="white-space:nowrap;text-align:left">${p.at || "–"}</td>
+      <td>${fmtNum(p.stir_rpm, 0)}</td><td>${fmtNum(p.rod_units, 0)}</td>
+      <td style="white-space:nowrap">${mgmtSigText(p)}</td>
+      <td><b>${fmtNum(p.rate_mg_s)}</b></td>
+      <td>${fmtNum(p.cv_pct, 1)}</td>
+      <td>${fmtNum(p.delta_mg, 0)}</td>
+      <td style="text-align:left;white-space:nowrap">${where}</td></tr>`;
+  }
+  html += `</tbody></table>
+    <div style="margin-top:6px;font-size:11px;color:var(--muted,#7a8ba3)">
+      删除只动这张标定表（<b>${detail.file || ""}</b> 的 feedforward_v2 段），
+      删完立即重算三阶段搅拌转速与速率区间，下次加粉就按新表算。
+    </div>`;
+  box.innerHTML = html;
+  refreshMgmtSel();
+}
+
+$("mgmtPoints").addEventListener("change", ev => {
+  const target = ev.target;
+  if (!target) return;
+  if (target.id === "mgmtCbAll") {
+    const pts = (mgmtDetail && mgmtDetail.points) || [];
+    mgmtSelected.clear();
+    if (target.checked) for (const p of pts) mgmtSelected.add(p.index);
+    refreshMgmtSel();
+    return;
+  }
+  if (target.classList && target.classList.contains("mgmt-cb")) {
+    const index = Number(target.dataset.index);
+    if (target.checked) mgmtSelected.add(index);
+    else mgmtSelected.delete(index);
+    refreshMgmtSel();
+  }
+});
+
+async function loadMgmt(name) {
+  if (!name) { mgmtSelected.clear(); renderMgmt(null); return; }
+  try {
+    const detail = await api("/api/powder/detail", {name});
+    mgmtSelected.clear();           // 换粉/重载后旧索引失效，勾选必须清掉
+    renderMgmt(detail);
+  } catch (e) {
+    log(`标定点加载失败: ${e.message}`, "err");
+  }
+}
+
+async function deleteMgmtPoints(payload, label) {
+  const name = $("mgmtPowder").value;
+  if (!name) { log("请先选择粉末", "err"); return; }
+  await withBusy("cardCalibMgmt", async () => {
+    const r = await api("/api/powder/points/delete", {name, ...payload});
+    mgmtSelected.clear();
+    await loadMgmt(name);           // 先刷新本卡片
+    await loadPowders();            // 再刷新下拉框点数 / 前馈配方
+    return r;
+  }, r => r.removed
+    ? `${label}：已删除 ${r.removed} 点，剩余 ${r.remaining} 点` +
+      (r.cleared ? "（已删空，该粉变回未标定）" : "")
+    : `${label}：没有可删的点`);
+}
+
+$("mgmtPowder").onchange = () => loadMgmt($("mgmtPowder").value);
+$("btnMgmtReload").onclick = () => withBusy("cardCalibMgmt", async () => {
+  await loadPowders();
+  await loadMgmt($("mgmtPowder").value);
+  return {};
+}, "标定表已重新读取");
+$("btnMgmtSelectBad").onclick = () => {
+  const pts = (mgmtDetail && mgmtDetail.points) || [];
+  const bad = pts.filter(p => p.unreliable);
+  mgmtSelected.clear();
+  for (const p of bad) mgmtSelected.add(p.index);
+  refreshMgmtSel();
+  log(bad.length ? `已勾选 ${bad.length} 个不可信点` : "这张表里没有判为不可信的点");
+};
+$("btnMgmtClearSel").onclick = () => { mgmtSelected.clear(); refreshMgmtSel(); };
+$("btnMgmtDelete").onclick = () => {
+  const n = mgmtSelected.size;
+  if (!n) { log("先在表里勾选要删的标定点", "err"); return; }
+  const name = $("mgmtPowder").value;
+  if (!confirm(`删除「${name}」的 ${n} 个标定点？\n` +
+      `删除后立即按剩下的点重算三阶段搅拌转速与速率区间，不可撤销。\n` +
+      `（runs/ 下的历史归档文件不会删）\n\n继续？`)) return;
+  deleteMgmtPoints({indices: Array.from(mgmtSelected).sort((a, b) => a - b)}, "删除勾选点");
+};
+$("btnMgmtDeleteBad").onclick = () => {
+  const bad = ((mgmtDetail && mgmtDetail.points) || []).filter(p => p.unreliable).length;
+  const name = $("mgmtPowder").value;
+  if (!name) { log("请先选择粉末", "err"); return; }
+  if (!bad) { log("这张表里没有判为不可信的点", "err"); return; }
+  if (!confirm(`一键删除「${name}」中全部 ${bad} 个不可信点？\n` +
+      `判定口径：速率为 0 / 出粉量为 0 / CV > 40% / 字段缺失。\n` +
+      `删除后立即重算前馈表，不可撤销（runs/ 归档文件保留）。\n\n继续？`)) return;
+  deleteMgmtPoints({mode: "invalid"}, "清理不可信点");
+};
+$("btnMgmtWipe").onclick = () => {
+  const name = $("mgmtPowder").value;
+  if (!name) { log("请先选择粉末", "err"); return; }
+  if (!confirm(`⚠ 清空「${name}」的全部标定数据？\n` +
+      `这会摘掉档案里的 feedforward_v2 整段（三阶段搅拌转速、前馈表、修正系数全部失效），\n` +
+      `该粉之后加粉会退回纯闭环。档案文件本身和它的历史字段不会被删。\n\n继续？`)) return;
+  withBusy("cardCalibMgmt", async () => {
+    const r = await api("/api/powder/forget", {name});
+    mgmtSelected.clear();
+    await loadMgmt(name);
+    await loadPowders();
+    return r;
+  }, r => r.removed ? `已清空「${r.name}」的标定数据` : `没清掉：${r.reason || "档案不存在"}`);
+};
+
+let lastCalibKey = "";
+let lastCalibState = "";
+function fmtNum(v, digits = 2) {
+  if (v === null || v === undefined || v === "") return "–";
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : String(v);
+}
+function renderCalib(c) {
+  const st = c.state || "idle";
+  const running = !!c.running;
+  const total = c.total || 0;
+  const done = c.done || 0;
+  const stateText = {preparing: "准备中", running: "标定中", done: "已完成",
+                     aborted: "已中止", failed: "失败"}[st] || "空闲";
+  $("calibState").textContent = c.detail || stateText;
+  $("calibState").style.color = running ? "var(--warn,#d97706)" : "var(--muted,#7a8ba3)";
+  $("btnCalibStart").disabled = running;
+  $("btnCalibStop").disabled = !running;
+  // 标定刚结束：重新拉一次粉体库，让"已标定 N 点/三阶段搅拌转速"立即反映新数据。
+  if (lastCalibState === "running" && !running && (st === "done" || st === "aborted" || st === "failed")) {
+    loadPowders();
+  }
+  lastCalibState = st;
+
+  const pct = total ? Math.min(100, (done / total) * 100) : 0;
+  $("calibBar").style.width = pct.toFixed(1) + "%";
+  $("calibPct").textContent = `${done}/${total} 点`;
+
+  const cur = c.current || {};
+  $("calibPoint").textContent = (cur.stir_rpm === undefined)
+    ? "–" : `${cur.stir_rpm} RPM / ${cur.rod_units}`;
+  $("calibPhase").textContent = cur.phase || "–";
+  $("calibElapsed").textContent = (cur.elapsed_s === undefined) ? "–" : `${cur.elapsed_s}s`;
+  const pts = c.points || [];
+  const last = pts.length ? pts[pts.length - 1] : null;
+  $("calibLastRate").textContent = last ? `${fmtNum(last.rate_mg_s)} mg/s` : "–";
+
+  // 标定点表：内容不变就不重建（500ms 轮询下重刷 innerHTML 会闪）
+  // 振动参数也算进 key —— 同一点重测后若参数变了，表格必须跟着刷新。
+  const sigOf = (p) => {
+    const g = p.signal || {};
+    if (g.frequency_hz === undefined || g.frequency_hz === null) return "–";
+    return `${fmtNum(g.frequency_hz, 0)}Hz · ${fmtNum(g.duty_percent, 0)}% · ${fmtNum(g.amplitude_vpp, 2)}Vpp`;
+  };
+  const key = pts.map(p => `${p.stir_rpm}/${p.rod_units}/${sigOf(p)}/${p.rate_mg_s}`).join("|");
+  if (key === lastCalibKey) return;
+  lastCalibKey = key;
+  const box = $("calibPoints");
+  if (!pts.length) {
+    box.innerHTML = running ? "正在测第一个点…" : "尚未标定。";
+    return;
+  }
+  const sigSet = [...new Set(pts.map(sigOf))];
+  let html = `<table class="cpts"><thead><tr>
+    <th>搅拌 RPM</th><th>推杆开度</th><th>振动参数</th><th>速率 mg/s</th><th>CV %</th>
+    <th>本点出粉 mg</th><th>启动延迟 s</th></tr></thead><tbody>`;
+  for (const p of pts) {
+    const bad = (p.cv_pct > 40 || !p.rate_mg_s);
+    html += `<tr class="${bad ? "bad" : ""}">
+      <td>${p.stir_rpm}</td><td>${p.rod_units}</td>
+      <td style="white-space:nowrap">${sigOf(p)}</td>
+      <td><b>${fmtNum(p.rate_mg_s)}</b></td><td>${fmtNum(p.cv_pct, 1)}</td>
+      <td>${fmtNum(p.delta_mg, 0)}</td><td>${fmtNum(p.startup_delay_s, 2)}</td></tr>`;
+  }
+  html += `</tbody></table>`;
+  if (sigSet.length > 1) {
+    html += `<div style="margin-top:6px;color:var(--warn,#d97706)">
+      这张表混用了 ${sigSet.length} 组振动参数：${sigSet.map(s => `「${s}」`).join("、")}。
+      加粉时按<b>当前</b>参数下发，参数不同的点速率会有偏差，建议同一工况重测后再用。</div>`;
+  }
+  html += `<div style="margin-top:6px;font-size:11px">
+    CV &gt; 40% 的点判为不可信（红字），会用边界值兜底；每点都记下了当时的频率/占空比/振幅，
+    完整记录另存 <b>runs/calib_*.json</b>。</div>`;
+  box.innerHTML = html;
+}
+// 先加载标定默认参数、再加载粉体库：粉体库加载完会把表单按所选粉的标定参数覆盖一遍，
+// 顺序反了就会看到 22% 一闪之后变回 50%（竞态，2026-10-21 差点踩到）。
+loadCalibOptions().then(() => loadPowders());
+
+// ---------------- 左侧分栏导航 ----------------
+// 页面很长，左侧分栏标出当前在看的卡片；点一下就滚到对应卡片（section 上有 scroll-margin-top）。
+const SIDE_LINKS = Array.from(document.querySelectorAll("#sideNav a"));
+function updateSideActive() {
+  const y = window.scrollY + 120;
+  let current = SIDE_LINKS[0];
+  for (const link of SIDE_LINKS) {
+    const el = document.querySelector(link.getAttribute("href"));
+    if (el && el.offsetTop <= y) current = link;
+  }
+  for (const link of SIDE_LINKS) link.classList.toggle("active", link === current);
+}
+window.addEventListener("scroll", updateSideActive, {passive: true});
+window.addEventListener("resize", updateSideActive);
+updateSideActive();
+
 // ---------------- 全局急停 ----------------
 $("btnEstop").onclick = async () => {
   try {
@@ -373,7 +1450,16 @@ function render(s) {
   const online = s.ok || (s.lift || s.rod || s.stir);
   $("connDot").classList.toggle("on", !!online);
   $("connText").textContent = online ? `已连接 · ${new Date().toLocaleTimeString("zh-CN", {hour12: false})}` : "未连接";
-  if (s.errors && s.errors.length) log(s.errors.join(" | "), "err");
+  if (s.errors && s.errors.length) {
+    const errText = s.errors.join(" | ");
+    if (errText !== lastErrorText) {   // 只在错误内容变化时记录，避免每 500ms 刷屏
+      lastErrorText = errText;
+      log(errText, "err");
+    }
+  } else if (lastErrorText) {
+    lastErrorText = "";
+    log("设备错误已全部消失", "okmsg");
+  }
 
   if (s.lift) {
     $("liftP1").textContent = s.lift[0] ? s.lift[0].pos : "–";
@@ -410,8 +1496,22 @@ function render(s) {
     $("stirErr").textContent = err ? (err & 1 ? "堵转 " : "") + (err & 2 ? "堵转保护" : "") : "无";
     $("stirErr").className = "v " + (err ? "moving" : "stopped");
   }
+  // 搅拌互锁：搅拌在转时把升降的运动按钮置灰（后端同样硬拦，这里只是提前告知，
+  // 避免用户点了才看到报错）。「停止」「急停」永远可用。
+  if (s.stir && s.stir.rpm !== null && s.stir.rpm !== undefined) {
+    const stirRunning = Math.abs(s.stir.rpm) > 1;
+    for (const id of ["btnLiftMove", "btnLiftHome", "btnLiftAlign"]) {
+      const btn = $(id);
+      if (btn) btn.disabled = stirRunning;
+    }
+    const hint = $("liftInterlock");
+    if (hint) hint.style.display = stirRunning ? "" : "none";
+  }
   if (s.sig) {
     $("sigWave").textContent = s.sig.waveform_name || "未设置";
+    // 按钮高亮跟随真机波形（重启后默认方波；手动切过也要对得上）
+    const waveKey = {0: "sine", 1: "triangle", 2: "square"}[s.sig.waveform];
+    if (waveKey && waveKey !== currentWave) { currentWave = waveKey; paintWaveButtons(); }
     $("sigFA").textContent = (s.sig.freq === null ? "–" : s.sig.freq) + " Hz / " +
       (s.sig.amp === null ? "–" : s.sig.amp) + " Vpp";
     const sigOn = s.sig.output === true;
@@ -420,6 +1520,171 @@ function render(s) {
     $("sigLeft").textContent = s.sig.remaining === null ? "–" : `${s.sig.remaining}s`;
     $("sigLeft").className = "v " + (s.sig.remaining ? "moving" : "");
   }
+  if (s.bal) {
+    const b = s.bal;
+    const hasVal = b.mg !== null && b.mg !== undefined;
+    $("balG").textContent = hasVal ? (b.g).toFixed(3) : "–";
+    $("balMg").textContent = hasVal ? b.mg.toFixed(1) : "–";
+    // 稳定位：天平未连上 / 读失败时明确说"离线"，不要显示成"波动"误导。
+    const offline = b.online === false;
+    $("balStable").textContent = offline ? "离线" : (b.stable ? "稳定" : "波动");
+    $("balStable").className = offline ? "dev-bad" : (b.stable ? "stopped" : "moving");
+    $("balRaw").textContent = b.raw === null || b.raw === undefined ? "–" : b.raw;
+    $("balAt").textContent = b.at || "–";
+    $("balZero").textContent = b.zero_band === null || b.zero_band === undefined
+      ? "–" : (b.zero_band ? "在零点带" : "偏离零点");
+    // 基准 / Δ 增量
+    if (b.base && b.delta_mg !== null && b.delta_mg !== undefined) {
+      const sign = b.delta_mg > 0 ? "+" : "";
+      $("balDelta").textContent = `${sign}${b.delta_mg} / ${b.base.mg}`;
+      $("balDelta").className = "v " + (b.delta_mg > 0 ? "moving" : "stopped");
+    } else {
+      $("balDelta").textContent = "未设基准";
+      $("balDelta").className = "v";
+    }
+    // 目标质量差值：正值=还差多少，负值=超出多少
+    const target = parseFloat($("balTarget").value);
+    if (hasVal && target > 0) {
+      const remain = target - b.mg;
+      const el = $("balRemain");
+      el.textContent = remain >= 0 ? `还差 ${remain.toFixed(1)} mg` : `超出 ${(-remain).toFixed(1)} mg`;
+      el.className = "val " + (remain >= 0 ? "moving" : "stopped");
+    } else {
+      $("balRemain").textContent = "–";
+    }
+    const errEl = $("balErr");
+    if (b.error) {
+      errEl.textContent = `⚠ 天平读取异常：${b.error}`;
+      errEl.style.display = "";
+    } else {
+      errEl.style.display = "none";
+    }
+  }
+  if (s.dispense) renderDispense(s.dispense);
+  if (s.calib) renderCalib(s.calib);
+  // 手动动作统一锁定：加粉 / 标定运行中，除「停止」「急停」外一律置灰；
+  // 升降三键还要叠加"搅拌在转"这条约束（后端两处都是硬拦截，这里只是提前告知）。
+  const dispRunning = !!(s.dispense && s.dispense.running);
+  const calibRunning = !!(s.calib && s.calib.running);
+  const stirRunning = !!(s.stir && s.stir.rpm !== null && s.stir.rpm !== undefined &&
+                         Math.abs(s.stir.rpm) > 1);
+  applyManualLock(dispRunning || calibRunning, stirRunning);
+}
+
+const MANUAL_LOCK_IDS = ["btnLiftMove", "btnLiftHome", "btnLiftAlign", "btnRodMove",
+  "btnRodHome", "btnStirStart", "btnSigApply", "btnSigOn", "btnSigRun", "btnBalTare",
+  "btnDispStart", "btnCalibStart",
+  // 标定管理：加粉/标定跑着的时候不许改表（后端也是硬拦）
+  "btnMgmtReload", "btnMgmtSelectBad", "btnMgmtClearSel", "btnMgmtDeleteBad", "btnMgmtWipe"];
+const LIFT_ONLY_IDS = ["btnLiftMove", "btnLiftHome", "btnLiftAlign"];
+function applyManualLock(locked, stirRunning) {
+  for (const id of MANUAL_LOCK_IDS) {
+    const btn = $(id);
+    if (!btn) continue;
+    btn.disabled = locked || (stirRunning && LIFT_ONLY_IDS.includes(id));
+  }
+  document.querySelectorAll("button.wave").forEach(btn => { btn.disabled = locked; });
+  // 「删除勾选点」还要叠加"有没有勾选"这个条件，单独算，别被上面统一置灰覆盖
+  const mgmtDel = $("btnMgmtDelete");
+  if (mgmtDel) mgmtDel.disabled = locked || mgmtSelected.size === 0;
+}
+
+// 结果曲线：把运行中的 (t, 质量) 画成一条 SVG 折线，目标值画虚线。
+function curveSvg(curve, targetMg) {
+  if (!curve || curve.length < 2) return "";
+  const W = 560, H = 90, pad = 4;
+  const maxT = curve[curve.length - 1][0] || 1;
+  const maxM = Math.max(targetMg * 1.15, ...curve.map(p => p[1]), 1);
+  const x = t => pad + (W - 2 * pad) * (t / maxT);
+  const y = m => H - pad - (H - 2 * pad) * (m / maxM);
+  const pts = curve.map(p => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+  const ty = y(targetMg).toFixed(1);
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;margin-top:8px">
+    <line x1="${pad}" y1="${ty}" x2="${W - pad}" y2="${ty}" stroke="#94a3b8" stroke-dasharray="4 4" stroke-width="1"/>
+    <polyline points="${pts}" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linejoin="round"/>
+  </svg>
+  <div style="font-size:11px;color:#7a8ba3">虚线 = 目标 ${targetMg} mg，横轴 ${maxT.toFixed(0)}s</div>`;
+}
+
+function renderDispense(d) {
+  const st = d.state || "idle";
+  const live = d.live || {};
+  const res = d.result;
+  const running = !!d.running;
+  const runningText = {preparing: "准备中", running: "加粉中", settling: "结算中"}[st] || "空闲";
+  $("dispState").textContent = running ? `${runningText} · ${d.detail || ""}` : (d.detail || "空闲");
+  $("dispState").style.color = running ? "var(--warn,#d97706)" : "var(--muted,#7a8ba3)";
+
+  const target = (d.config && d.config.target_mg) || parseInt($("dispTarget").value, 10) || 100;
+  // 净质量：运行中优先用闭环最后一帧（它同时带速率/振幅）；收尾(settling)与结束
+  // (done/aborted) 时主循环已经不再采数，改用后端每轮新读的天平计数减去本炉基线，
+  // 这样「当前质量」不会冻在 991 而实际已经沉到 1009。
+  const net = (typeof d.net_mass_mg === "number") ? d.net_mass_mg : null;
+  const liveMass = (live.mass_mg !== undefined) ? live.mass_mg : null;
+  const tail = (st === "settling" || st === "done" || st === "aborted" || st === "failed");
+  const massNow = (tail && net !== null) ? net
+                : (running && liveMass !== null ? liveMass : (net !== null ? net : liveMass));
+
+  if (massNow !== null && (running || res)) {
+    $("dispMass").textContent = `${fmtNum(massNow, 1)} / ${target}`;
+    // 收尾/结束后这个数是每轮现读天平的换算值；天平读不到时会回缓存，标出来免得误判。
+    $("dispMass").title = (tail && d.net_stale) ? "天平读数延迟（显示的是最后一次成功读数）" : "";
+    if (tail) {
+      // 振动已关、加粉已停：速率与振幅按 0 显示，别把最后一帧的 18.18 留在屏幕上
+      $("dispRate").textContent = "0.00";
+      $("dispAmpLive").textContent = "0.00";
+      $("dispStage").textContent = st === "settling" ? "收尾称重" : "已结束";
+      const dev = massNow - target;
+      $("dispTime").textContent =
+        `${res ? res.duration_s : (live.elapsed_s ?? 0)}s · ` +
+        `${dev >= 0 ? "超出" : "还差"} ${Math.abs(dev).toFixed(0)}mg`;
+    } else {
+      $("dispRate").textContent = (live.rate_mg_s > 0 ? "+" : "") + live.rate_mg_s;
+      $("dispAmpLive").textContent = live.amp_vpp !== undefined ? live.amp_vpp.toFixed(2) : "–";
+      $("dispStage").textContent = DISP_STAGE_TEXT[live.stage] || live.stage || "–";
+      $("dispTime").textContent = `${live.elapsed_s}s / 还差 ${Math.max(0, live.remaining_mg)}mg`;
+    }
+    const pct = Math.max(0, Math.min(100, (massNow / target) * 100));
+    $("dispBar").style.width = pct.toFixed(1) + "%";
+    $("dispPct").textContent = pct.toFixed(0) + "%";
+  } else if (!running) {
+    $("dispBar").style.width = res ? "100%" : "0%";
+    $("dispPct").textContent = res ? "—" : "0%";
+  }
+
+  // 手动按钮的锁定统一由 render() 末尾的 applyManualLock 负责
+  // （加粉与标定都会锁，且升降三键还要受搅拌约束，放一处才不会互相反手解开）。
+  $("btnDispStart").disabled = running;
+  $("btnDispStop").disabled = !running;
+
+  const box = $("dispResult");
+  if (!res) { box.style.display = "none"; return; }
+  const good = res.verdict === "合格";
+  const color = good ? "var(--accent-2,#059669)" : "var(--danger,#dc2626)";
+  box.style.display = "";
+  box.innerHTML = `
+    <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+      <b style="font-size:18px;color:${color}">${res.verdict}</b>
+      <span>目标 <b>${res.target_mg}</b> mg</span>
+      <span>实得 <b style="font-size:17px">${res.achieved_mg}</b> mg</span>
+      <span style="color:${color}">偏差 ${res.delta_mg > 0 ? "+" : ""}${res.delta_mg} mg</span>
+      <span style="color:#7a8ba3">验收 ${res.acceptance_mg[0]}–${res.acceptance_mg[1]} mg · ${res.duration_s}s</span>
+    </div>
+    <div style="font-size:12px;color:#7a8ba3;margin-top:4px">
+      停止原因：${res.stop_reason}${res.estimated ? " · ⚠ 天平读数中断，终值为最后一次已知值" : ""}
+      ${res.log_path ? ` · 记录 ${res.log_path.split("\\\\").pop()}` : ""}
+    </div>
+    ${(res.stages && res.stages.length) ? `<div style="font-size:12px;color:#5a6b82;margin-top:6px">
+      ${res.stages.map(s => `${s.stage_text}：${s.start_mass_mg}→${s.end_mass_mg ?? "—"} mg ` +
+        `（目标 ${s.rate_target_mg_s} / 实际 ${s.actual_rate_mg_s ?? "—"} mg/s，` +
+        `幅 ${s.amp_min_vpp ?? s.amp_start_vpp ?? "—"}–${s.amp_max_vpp ?? s.amp_end_vpp ?? "—"}V` +
+        `（末 ${s.amp_end_vpp ?? "—"}，调 ${s.amp_changes ?? "—"} 次），` +
+        `杆 ${s.rod_ff}→${s.rod_final ?? "—"}` +
+        (s.settle_gain_mg === undefined ? "" :
+          `，切段沉降 +${s.settle_gain_mg}mg/${s.settle_wait_s}s` +
+          (s.settle_stable ? "" : "未判稳")) + `）`).join("<br>")}
+    </div>` : ""}
+    ${curveSvg(res.curve, res.target_mg)}`;
 }
 async function poll() {
   try { render(await api("/api/status")); }
@@ -427,7 +1692,7 @@ async function poll() {
 }
 setInterval(poll, 500);
 poll();
-log("页面就绪。升降与推杆共用 COM10 总线，搅拌走 COM9，振动给料走 COM16。");
+log("页面就绪。升降与推杆共用 COM10 总线，搅拌走 COM9，振动给料走 COM16，天平走 COM11。");
 log("安全提示：页面动作均为真实硬件动作，请确认机构周围无人后操作。");
 </script>
 </body>
