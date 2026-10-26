@@ -175,7 +175,7 @@
   <!-- 闭环加粉 -->
   <section class="card wide" id="cardDisp">
     <h2>闭环加粉 <span class="tag">dispensing_algorithm · 天平闭环 · 振动+推杆</span></h2>
-    <div class="desc">算法层原样复用（观测进、决策出），这里是硬件绑定层：天平质量 → 运动观测器 → <b>振幅闭环 v6</b>（延迟补偿 + 事件驱动：纯滞后 τ 与落料周期 T 从落料阶跃在线估计，判据只看「上次调幅 + τ」之后的生效窗；速率正在回升时先等——上一发的效果还在路上不叠加；有流量只微调 <b>标定振幅 ±0.2V</b>，偏慢 3s 起进<b>丝滑爬坡</b>（标定±0.5V 带内：有出粉 +0.08V/4s、速率为0 +0.12V/3s，<b>有出粉绝不脉冲冲击</b>）；整个生效窗一粒粉没落 = 卡粉/断料，快加/粗加<b>爬到带顶仍断料才踢一脚</b>救济（振幅瞬间抬到 <b>标定+1V</b> 持续 <b>0.5s</b> 后回落，一脚没踢开下一脚再 +0.5V），硬顶 <b>标定值 +1.5V</b>，到顶提示查料斗；慢加与慢加的踢脚规则不变，<b>追速率依旧禁止</b>，只有恢复出料的救济通道）+ 控制器（只做预测停车判定）。<b>三个阶段可以逐段配置你自己标定过的参数</b>：快加（大头：≤5000 到 75%、&gt;5000 冲到剩余 800mg，追速度不管稳不稳）→ 粗加（跟得上又不太毛躁）→ 慢加（低幅收尾、预测停车）。<b>推杆只在阶段入口开到该段开度，整段锁死不动，收尾也不复位</b>；<b>频率/占空比跟着所选粉末的标定走</b>（失水剂1 = 80Hz/22%，膨润土 = 80Hz/50%，没标定的粉才用默认 80Hz/50%）——换粉千万别忘了这组参数，它是速率曲线的前提。运行中振动与推杆由控制器接管，手动按钮全部锁定；「停止」与急停永远可用。目标 100–20000 mg，验收 ±10 mg。<b>切段沉降门</b>：切出速率高时先停振等余料落完再换段（搅拌和推杆保持不动），并把"停振后还落了多少"记进粉体档案，下次自动把切换点提前——重粉不加这一步，余料会把粗加/慢加顶穿。<b>「当前质量」从起振到收尾、结束以后一直实时读天平</b>（收尾沉降的那几秒也不再冻住），结束停稳后显示的就是最终净重。</div>
+    <div class="desc">算法层原样复用（观测进、决策出），这里是硬件绑定层：天平质量 → 运动观测器 → <b>振幅闭环 v6</b>（延迟补偿 + 事件驱动：纯滞后 τ 与落料周期 T 从落料阶跃在线估计，判据只看「上次调幅 + τ」之后的生效窗；速率正在回升时先等——上一发的效果还在路上不叠加；有流量只微调 <b>标定振幅 ±0.2V</b>，偏慢 3s 起进<b>丝滑爬坡</b>（标定±0.5V 带内：有出粉 +0.08V/4s、速率为0 +0.12V/3s，<b>有出粉绝不脉冲冲击</b>）；整个生效窗一粒粉没落 = 卡粉/断料，快加/粗加<b>爬到带顶仍断料才踢一脚</b>救济（振幅瞬间抬到 <b>标定+1V</b> 持续 <b>0.5s</b> 后回落，一脚没踢开下一脚再 +0.5V），硬顶 <b>标定值 +1.5V</b>，到顶提示查料斗；慢加与慢加的踢脚规则不变，<b>追速率依旧禁止</b>，只有恢复出料的救济通道）+ 控制器（只做预测停车判定）。<b>三个阶段可以逐段配置你自己标定过的参数</b>：快加（大头：≤5000 到 75%、&gt;5000 冲到剩余 800mg，追速度不管稳不稳）→ 粗加（跟得上又不太毛躁）→ 慢加（低幅收尾、预测停车）。<b>推杆只在阶段入口开到该段开度，整段锁死不动，收尾也不复位</b>；<b>频率/占空比跟着所选粉末的标定走</b>（失水剂1 = 80Hz/22%，膨润土 = 80Hz/50%，没标定的粉才用默认 80Hz/50%）——换粉千万别忘了这组参数，它是速率曲线的前提。运行中振动与推杆由控制器接管，手动按钮全部锁定；「停止」与急停永远可用。目标 100–20000 mg，验收 ±10 mg。<b>切段沉降门</b>：<b>切出速率 ≥ 本段规定速率×1.5</b>（粗加 20→30mg/s、快加 75→112.5mg/s；页面填了数就用绝对值）时先停振等余料落完再换段（搅拌和推杆保持不动）；并且<b>「当前质量 + 速率×1s」够到切点就提前停振</b>，让余料正好落在切点上（预测尾量切段）；每次"停振后还落了多少"记进粉体档案，下次自动把切换点提前——重粉不加这一步，余料会把粗加/慢加顶穿。<b>「当前质量」从起振到收尾、结束以后一直实时读天平</b>（收尾沉降的那几秒也不再冻住），结束停稳后显示的就是最终净重。</div>
     <div class="row">
       <label>粉末</label>
       <select id="dispPowder" style="min-width:240px; width:auto"><option value="">（不用标定 · 纯闭环）</option></select>
@@ -205,11 +205,19 @@
       <input type="checkbox" id="dispGate" checked>
       <span class="tag">切段前停振等余料落完（重粉必开）</span>
       <label style="min-width:auto">触发速率</label>
-      <input type="number" id="dispGateRate" min="1" max="300" step="1" value="30">
-      <span class="tag">mg/s（低于它直接切）</span>
+      <input type="number" id="dispGateRate" min="0.5" max="300" step="0.5" placeholder="1.5×">
+      <span class="tag" title="留空 = 按段算：本段规定速率×1.5（快加 75→112.5、粗加 20→30mg/s）；填了数就是绝对门槛，低于它直接切">mg/s（留空=按段 1.5×规定速率）</span>
       <label style="min-width:auto">提前降幅</label>
       <input type="number" id="dispTaper" min="0" max="3" step="0.05" value="0.6">
       <span class="tag">×当前速率（0=不提前降）</span>
+    </div>
+    <div class="row">
+      <label>超速熔断</label>
+      <input type="checkbox" id="dispSurge" checked>
+      <span class="tag" title="段内 0.7s 短窗速率超过本段规定速率×倍率，或剩余量不够这一瞬间的落料（剩余 ≤ 速率×1.5s）时，立刻停振等余料落干净，再降 0.1V 重新起振；塌料（0.5s 落 100mg）靠它兜住">段内落料过猛就停振等余料（防塌料冲过头）</span>
+      <label style="min-width:auto">倍率</label>
+      <input type="number" id="dispSurgeRatio" min="1" max="10" step="0.1" value="2.5">
+      <span class="tag">×本段规定速率（粗加 20→50mg/s；0=关）</span>
     </div>
     <div class="row">
       <label>缓补脉冲</label>
@@ -218,9 +226,7 @@
       <label style="min-width:auto">触发剩余量</label>
       <input type="number" id="dispTrimEnter" min="5" max="200" step="1" placeholder="40">
       <span class="tag">mg（留空=默认40）</span>
-      <label style="min-width:auto">每发目标</label>
-      <input type="number" id="dispTrimPulse" min="3" max="50" step="1" placeholder="10">
-      <span class="tag">mg/发（留空=默认10）</span>
+      <span class="tag" title="每发脉冲时长固定 0.40s，不再随时长自适应；凑多少只靠调振幅（>3V 出了粉就回退 1V：3.5→2.5、4→3；≤3V 不触发回退），出得慢就多发几发">每发固定 0.40s（只调振幅）</span>
     </div>
 
     <div class="row" style="margin-top:6px">
@@ -243,7 +249,7 @@
       <input type="checkbox" class="s-en" data-stage="fast" checked>
       <input type="number" class="s-stir" data-stage="fast" min="0" max="1500" step="10" style="width:100%">
       <input type="number" class="s-rod" data-stage="fast" min="20" max="1200" step="5" style="width:100%">
-      <input type="number" class="s-amp" data-stage="fast" min="1" max="4" step="0.05" style="width:100%" placeholder="自动">
+      <input type="number" class="s-amp" data-stage="fast" min="1" max="4" step="0.05" style="width:100%" value="3" placeholder="自动" title="快加默认 3.0Vpp；闭环在 2.5–3.5V 内按速率加减。留空 = 后端默认 3.0">
       <input type="number" class="s-rate" data-stage="fast" min="0.1" max="300" step="0.1" style="width:100%" placeholder="75" title="留空 = 默认 75 mg/s（按它从标定表挑工作点：转速和推杆开度都照抄那一点，推杆整段锁死）">
       <input type="number" class="s-duty" data-stage="fast" min="5" max="50" step="1" style="width:100%">
       <input type="number" class="s-switch" data-stage="fast" min="1" step="1" style="width:100%" placeholder="—">
@@ -253,7 +259,7 @@
       <input type="checkbox" class="s-en" data-stage="coarse" checked>
       <input type="number" class="s-stir" data-stage="coarse" min="0" max="1500" step="10" style="width:100%">
       <input type="number" class="s-rod" data-stage="coarse" min="20" max="1200" step="5" style="width:100%">
-      <input type="number" class="s-amp" data-stage="coarse" min="1" max="4" step="0.05" style="width:100%" placeholder="自动">
+      <input type="number" class="s-amp" data-stage="coarse" min="1" max="4" step="0.05" style="width:100%" value="2.5" placeholder="自动" title="粗加默认 2.5Vpp；闭环在 2.0–3.0V 内按速率加减。留空 = 后端默认 2.5">
       <input type="number" class="s-rate" data-stage="coarse" min="0.1" max="300" step="0.1" style="width:100%" placeholder="20" title="留空 = 默认 20 mg/s">
       <input type="number" class="s-duty" data-stage="coarse" min="5" max="50" step="1" style="width:100%">
       <input type="number" class="s-switch" data-stage="coarse" min="1" step="1" style="width:100%" placeholder="—">
@@ -263,14 +269,14 @@
       <input type="checkbox" class="s-en" data-stage="slow" checked disabled title="收尾段，不可关闭">
       <input type="number" class="s-stir" data-stage="slow" min="0" max="1500" step="10" style="width:100%">
       <input type="number" class="s-rod" data-stage="slow" min="20" max="1200" step="5" style="width:100%">
-      <input type="number" class="s-amp" data-stage="slow" min="1" max="4" step="0.05" style="width:100%" placeholder="自动">
+      <input type="number" class="s-amp" data-stage="slow" min="1" max="4" step="0.05" style="width:100%" value="2" placeholder="自动" title="慢加默认 2.0Vpp；整段锁这个值，只做恢复出料不追速率（卡粉才踢一脚）。留空 = 后端默认 2.0">
       <input type="number" class="s-rate" data-stage="slow" min="0.1" max="300" step="0.1" style="width:100%" placeholder="5" title="留空 = 默认 5 mg/s">
       <input type="number" class="s-duty" data-stage="slow" min="5" max="50" step="1" style="width:100%">
       <input type="number" class="s-switch" data-stage="slow" min="1" step="1" style="width:100%" placeholder="收尾">
       <input type="number" class="s-settle" data-stage="slow" min="0" max="5" step="0.1" style="width:100%" placeholder="—" disabled title="最后一段之后不再切段，沉降由收尾称重负责">
     </div>
     <div style="font-size:11px;color:var(--muted,#7a8ba3);margin-bottom:6px" id="dispPlanHint">
-      切换点规则：目标 &gt; 5000 时快加迅速冲到「剩余 800mg」直接切粗加，粗加到剩余 100mg；1000–5000 时快加到 75%、粗加到 95%（5% 超过 100mg 则到剩余 100mg）；≤ 1000 只用粗加+慢加；&lt; 300 时粗加只到「目标−40mg」，保证慢加段有 40mg 以上可调。<b>目标速率留空 = 快加 75 / 粗加 20 / 慢加 5 mg/s</b>，这三个数只是「从标定表挑工作点」的靶子：挑中哪个标定点，就用它的<b>搅拌转速和推杆开度</b>，<b>推杆整段锁死、绝不用来调速</b>，速率只由<b>振幅</b>负责（闭环 v6：τ 纯滞后与落料周期 T 由落料阶跃在线估计，判据只看「上次调幅 + τ」之后的生效窗；速率正在回升 = 上一发还在生效，先等不叠加）：有流量只在<b>标定振幅 ±0.2V</b> 微调，偏慢 3s 起进<b>丝滑爬坡</b>（标定±0.5V 带内：有出粉 +0.08V/4s、速率为0 +0.12V/3s——"速度小了就先加到 2.58 慢慢变，速度为 0 就加到 2.62"，<b>有出粉绝不脉冲冲击</b>）；<b>整个生效窗一粒粉没落 = 卡粉/断料</b>，快加/粗加<b>爬到带顶仍断料才踢一脚</b>救济（振幅瞬间抬 标定+1V 持续 0.5s 后回落标定值，一脚没踢开下一脚 +0.5V），硬顶「标定值 +1.5V」（实测起振门槛可能高于标定振幅），到顶仍不出料就在日志里提示查料斗；<b>慢加不追速率</b>——偏慢就按实际速率收，只有真卡粉才走救济；<b>慢加连续振幅最高 标定+0.5V</b>（设 2V 就最多 2.5V，起振门槛记忆不再抬慢加起步），踢脚是 0.5s 脉冲、踢完回落。慢加段的目标速率是动态的（剩余量 ÷ 18s，越接近目标越慢）。<b>缓补（trim pulse，开关 = 页面「缓补脉冲」勾选框，换粉时自动带出档案里的 trim_pulse 字段，可手动强制开/关）</b>：慢加剩余量进入最后触发剩余量区间（默认 20–40mg）时停掉连续振动，改为 ≈每发目标（默认 10mg）/发的<b>真脉冲</b>（信号发生器猝发输出：设好个数 WP1s 触发，设备数完自动停，指令失败自动降级软件定时）→ 关振等落定称重 → 自适应下一发时长，一发一发凑到目标；某发完全没出粉就振幅 +0.5V 试探（最高 4V）并把下一发缩到最短；慢加速率浮动小、落点本来就准的粉（如膨润土、封堵剂1）不必开。
+      切换点规则：目标 &gt; 5000 时快加迅速冲到「剩余 800mg」直接切粗加，粗加到剩余 100mg；1000–5000 时快加到 75%、粗加到 95%（5% 超过 100mg 则到剩余 100mg）；≤ 1000 只用粗加+慢加；&lt; 300 时粗加只到「目标−40mg」，保证慢加段有 40mg 以上可调。<b>目标速率留空 = 快加 75 / 粗加 20 / 慢加 5 mg/s</b>，这三个数只是「从标定表挑工作点」的靶子：挑中哪个标定点，就用它的<b>搅拌转速和推杆开度</b>，<b>推杆整段锁死、绝不用来调速</b>，速率只由<b>振幅</b>负责（闭环 v6：τ 纯滞后与落料周期 T 由落料阶跃在线估计，判据只看「上次调幅 + τ」之后的生效窗；速率正在回升 = 上一发还在生效，先等不叠加）：有流量只在<b>标定振幅 ±0.2V</b> 微调，偏慢 3s 起进<b>丝滑爬坡</b>（标定±0.5V 带内：有出粉 +0.08V/4s、速率为0 +0.12V/3s——"速度小了就先加到 2.58 慢慢变，速度为 0 就加到 2.62"，<b>有出粉绝不脉冲冲击</b>）；<b>整个生效窗一粒粉没落 = 卡粉/断料</b>，快加/粗加<b>爬到带顶仍断料才踢一脚</b>救济（振幅瞬间抬 标定+1V 持续 0.5s 后回落标定值，一脚没踢开下一脚 +0.5V），硬顶「标定值 +1.5V」（实测起振门槛可能高于标定振幅），到顶仍不出料就在日志里提示查料斗；<b>慢加不追速率</b>——偏慢就按实际速率收，只有真卡粉才走救济；<b>慢加连续振幅最高 标定+0.5V</b>（设 2V 就最多 2.5V，起振门槛记忆不再抬慢加起步），踢脚是 0.5s 脉冲、踢完回落。慢加段的目标速率是动态的（剩余量 ÷ 18s，越接近目标越慢）。<b>缓补（trim pulse，开关 = 页面「缓补脉冲」勾选框，换粉时自动带出档案里的 trim_pulse 字段，可手动强制开/关）</b>：慢加剩余量进入最后触发剩余量区间（默认 20–40mg）时停掉连续振动，改为<b>每发固定 0.40s</b> 的<b>真脉冲</b>（信号发生器猝发输出：设好个数 WP1s 触发，设备数完自动停，指令失败自动降级软件定时）→ 关振等落定称重 → 再发下一发，一发一发凑到目标；<b>时长始终 0.40s 不变，只调振幅</b>（没出粉每发 +0.5V；振幅 &gt;3V 出了粉就<b>一次回退 1V</b>——3.5V 退到 2.5V、4V 退到 3V，可退到 3V 以下，≤3V 不触发回退；单发 &gt;18mg 算加多了）；慢加速率浮动小、落点本来就准的粉（如膨润土、封堵剂1）不必开。
     </div>
     <div style="font-size:11px;color:var(--muted,#7a8ba3);margin-bottom:6px" id="dispPoints">标定点：—</div>
 
@@ -590,8 +596,9 @@ async function apiGate(path, body) {
   try {
     return await api(path, body);
   } catch (e) {
-    if (!/unexpected keyword|settle_gate|taper_factor/i.test(e.message)) throw e;
+    if (!/unexpected keyword|settle_gate|taper_factor|surge_/i.test(e.message)) throw e;
     const { settle_gate, settle_gate_rate_mg_s, taper_factor,
+            surge_guard, surge_ratio,
             trim_enabled, trim_enter_remain_mg, trim_pulse_target_mg, ...rest } = body;
     return await api(path, rest);
   }
@@ -743,6 +750,10 @@ $("btnBalStable").onclick = () => withBusy("cardBal",
 // ---------------- 闭环加粉 ----------------
 const DISP_STAGE_TEXT = {fast: "快加", coarse: "粗加", slow: "慢加", settle: "收尾判停", trim: "缓补"};
 const DISP_STAGE_ROWS = ["fast", "coarse", "slow"];
+// 三阶段振幅默认（2026-10-23 18:36 用户定）：快加 3.0 / 粗加 2.5 / 慢加 2.0 Vpp。
+// 直接填进输入框（看得见、可一键改），后端 STAGE_DEFAULT_AMP_VPP 是同一套数：
+// 页面把这三个格清空，后端仍按这三个值走，不会退回粉体标定振幅。
+const DISP_STAGE_AMP_DEFAULT = {fast: 3.0, coarse: 2.5, slow: 2.0};
 function stageInput(name, cls) {
   return document.querySelector(`#dispStages .${cls}[data-stage="${name}"]`);
 }
@@ -774,15 +785,20 @@ function dispGateParams() {
     settle_gate: $("dispGate").checked,
     settle_gate_rate_mg_s: numOrNull("dispGateRate"),
     taper_factor: numOrNull("dispTaper"),
+    // 段内超速熔断（2026-10-26 11:33）：塌料 0.5s 落 100mg 时停振等余料
+    surge_guard: $("dispSurge").checked,
+    surge_ratio: numOrNull("dispSurgeRatio"),
   };
 }
 // 缓补参数：开关总是显式传（勾选框在换粉时已按档案带出，页面值就是本次的最终值）；
-// 两个数值留空 = 后端默认（触发剩余 40mg、每发 10mg）
+// 触发剩余量留空 = 后端默认 40mg。脉冲时长自 2026-10-26 10:32 起固定 0.40s/发
+// （用户："全部设为 0.4 秒，不变，只变幅度即可，慢慢出就行"），页面不再提供"每发目标"，
+// 送 null 让后端用固定值。
 function dispTrimParams() {
   return {
     trim_enabled: $("dispTrim").checked,
     trim_enter_remain_mg: numOrNull("dispTrimEnter"),
-    trim_pulse_target_mg: numOrNull("dispTrimPulse"),
+    trim_pulse_target_mg: null,
   };
 }
 // 后端算好的计划 → 回填表格（三行都先清空，避免上一轮的残留值）
@@ -795,7 +811,11 @@ function fillStages(plan) {
       if (el) el.value = "";
     }
     const amp = stageInput(name, "s-amp");
-    if (amp) amp.placeholder = "自动";
+    if (amp) {
+      // 振幅默认值直接落到 value 上（3.0 / 2.5 / 2.0），用户看得见也改得动
+      amp.value = DISP_STAGE_AMP_DEFAULT[name] ?? "";
+      amp.placeholder = "自动";
+    }
   }
   for (const item of plan || []) {
     const en = stageInput(item.stage, "s-en");
@@ -806,10 +826,14 @@ function fillStages(plan) {
     };
     put("s-stir", Math.round(item.stir_rpm));
     put("s-rod", item.rod_ff);
-    // 振幅留空 = 自动（切段时按上一段实测速率比例预置），建议值只放 placeholder：
-    // 如果直接回填成具体值，切段后就变成"显式振幅"，反而丢掉了自动预置的快速收敛。
+    // 振幅：三行固定默认 3.0 / 2.5 / 2.0（用户 2026-10-23 18:36 定），直接回填成具体值，
+    // 提交时就是显式振幅；后端算出的本段值只放 title 供对照（清空输入框时后端也按默认走）。
     const ampEl = stageInput(item.stage, "s-amp");
-    if (ampEl) ampEl.placeholder = `自动 ${item.amplitude_vpp}`;
+    if (ampEl) {
+      if (ampEl.value === "") ampEl.value = DISP_STAGE_AMP_DEFAULT[item.stage] ?? "";
+      ampEl.title = `${DISP_STAGE_TEXT[item.stage]}默认 ${DISP_STAGE_AMP_DEFAULT[item.stage]}Vpp`
+        + `（后端计划 ${item.amplitude_vpp}V）；闭环在基准 ±0.5V 内自动加减`;
+    }
     put("s-rate", item.rate_mg_s);
     put("s-duty", item.duty_seed_pct);
     put("s-switch", item.switch_mass_mg);
@@ -817,6 +841,11 @@ function fillStages(plan) {
   }
 }
 let dispPlanTimer = null;
+// 表里现在这套"加料"切点，是按哪个目标质量算出来的。
+// 2026-10-23 15:46 那炉踩的坑：目标从 2000 改成 3000，change 事件走 350ms 防抖去重算，
+// 用户紧接着就点了「开始加粉」——提交的还是 2000 那套切点（快加1450/粗加1812），
+// 结果 1812mg 就进慢加，剩下 1186mg 全用 5mg/s 慢慢补。点开始时必须核对这个值。
+let lastPlanFilledTarget = null;
 async function refreshDispPlan(fill) {
   const target = parseInt($("dispTarget").value, 10);
   const info = $("dispPlanInfo");
@@ -836,6 +865,7 @@ async function refreshDispPlan(fill) {
       ...dispGateParams(),
     });
     if (fill) fillStages(r.plan);
+    if (fill) lastPlanFilledTarget = target;
     const pts = (r.calibration_points || []);
     $("dispPoints").textContent = pts.length
       ? "标定点（可直接抄进上表）：" + pts.map(p =>
@@ -862,7 +892,10 @@ async function refreshDispPlan(fill) {
     const gate = r.settle_gate || {};
     info.textContent = `${r.calibrated ? "按标定表" : "无标定，按预设"} · ` +
       `振动 ${fmtNum(r.frequency_hz, 0)}Hz/${fmtNum(r.duty_percent, 0)}%（${sigSrc}） · ` +
-      `沉降门 ${gate.enabled === false ? "关" : `开≥${fmtNum(gate.rate_mg_s, 0)}mg/s`} · ` +
+      `沉降门 ${gate.enabled === false ? "关"
+        : (gate.rate_mg_s === null || gate.rate_mg_s === undefined
+            ? `开·按段 ${fmtNum(gate.rate_ratio ?? 1.5, 2)}×规定速率`
+            : `开≥${fmtNum(gate.rate_mg_s, 0)}mg/s`)} · ` +
       `预计 ${r.estimated_s}s · ` + parts.join(" → ");
   } catch (e) {
     info.style.color = "var(--danger,#dc2626)";
@@ -877,12 +910,34 @@ $("btnDispPlan").onclick = () => refreshDispPlan(true);
 $("dispTarget").addEventListener("change", () => scheduleDispPlan(true));
 $("dispPowder").addEventListener("change", () => scheduleDispPlan(true));
 $("dispCategory").addEventListener("change", () => scheduleDispPlan(true));
-$("btnDispStart").onclick = () => {
+$("btnDispStart").onclick = async () => {
   const target = parseInt($("dispTarget").value, 10);
+  // 目标改过、三阶段表还是上一炉的切点 → 先按新目标重算再提交。
+  // （2026-10-23 15:46：2000→3000 没等重算就点开始，1812mg 就进慢加，剩 1186mg 全走 5mg/s）
+  if (lastPlanFilledTarget !== target) {
+    await refreshDispPlan(true);
+    if (lastPlanFilledTarget !== target) {
+      log("三阶段配方没跟上目标质量，自动重算失败——请点「按标定表重算」再开始", "err");
+      return;
+    }
+    log(`已按新目标 ${target} mg 重算三阶段切点`);
+  }
   const tail = $("dispTail").value;
   const powder = $("dispPowder").value;
   const stages = collectStages().filter(s => s.enabled);
   if (!stages.length) { log("三阶段至少要启用一段", "err"); return; }
+  // 慢加是收尾段，正常只该 5~15%。切点若还是上一炉的（或手填错），
+  // 这里把"慢加要补多少"直接摊给操作员看，别等跑起来才发现要磨四分钟。
+  const switches = stages
+    .map(s => s.switch_mass_mg)
+    .filter(v => v !== null && v !== undefined && Number.isFinite(v));
+  const lastSwitch = switches.length ? Math.max(...switches) : 0;
+  const slowRemain = Math.max(0, target - lastSwitch);
+  const slowWarn = (slowRemain > Math.max(0.3 * target, 150))
+    ? `\n⚠ 慢加段要补 ${slowRemain.toFixed(0)} mg（占目标 `
+      + `${(slowRemain / Math.max(1, target) * 100).toFixed(0)}%）——正常收尾只该 5~15%，`
+      + `切点可能没按新目标重算\n`
+    : "";
   const brief = stages.map(s =>
     `${DISP_STAGE_TEXT[s.name]}：搅 ${s.stir_rpm ?? "自动"} / 杆 ${s.rod_units ?? "自动"} / ` +
     `幅 ${s.amplitude_vpp ?? "自动"}V / ` +
@@ -892,17 +947,27 @@ $("btnDispStart").onclick = () => {
   const gate = dispGateParams();
   const trim = dispTrimParams();
   const gateText = gate.settle_gate
-    ? `切段沉降门：开（切出 ≥${gate.settle_gate_rate_mg_s ?? 30} mg/s 时停振等余料落完，`
-      + `提前 ${gate.taper_factor ?? 0.6}×速率降幅）\n`
+    ? `切段沉降门：开（切出速率 ≥ ${gate.settle_gate_rate_mg_s === null
+        ? "本段规定速率×1.5（快加 75→112.5、粗加 20→30mg/s）"
+        : `${gate.settle_gate_rate_mg_s} mg/s`} 时停振等余料落完；`
+      + `质量+速率×1s 够到切点就提前停振；提前 ${gate.taper_factor ?? 0.6}×速率降幅）\n`
     : "切段沉降门：关（达标即刻切段）\n";
   const trimText = trim.trim_enabled
     ? `缓补：开（慢加剩 ≤${trim.trim_enter_remain_mg ?? 40}mg 停连续振动，`
-      + `改为 ≈${trim.trim_pulse_target_mg ?? 10}mg/发 的真脉冲补料凑到目标，0 出粉逐发抬幅试探）\n`
+      + `改为 每发固定 0.40s 的真脉冲补料凑到目标；出多少只看振幅——`
+      + `没出粉逐发 +0.5V；>3V 出了粉就回退 1V（3.5→2.5、4→3，≤3V 不触发回退））\n`
     : "缓补：关（慢加直接判停收尾）\n";
+  const surgeText = gate.surge_guard
+    ? `超速熔断：开（段内 0.7s 短窗速率 ≥ 本段规定速率×${gate.surge_ratio ?? 2.5}，`
+      + `或剩余量不够这一瞬间的落料（剩余 ≤ 速率×1.5s）→ 立刻停振等余料，`
+      + `降 0.1V 再重新起振）\n`
+    : "超速熔断：关（塌料只能靠超重保护）\n";
   if (!confirm(`开始闭环加粉：目标 ${target} mg\n` +
-      `粉末：${powder || "（不选粉，纯闭环）"}\n${brief}\n${gateText}${trimText}\n` +
-      `振幅：粗加/快加=丝滑爬坡——标定±0.5V 带内慢慢调，有出粉 +0.08V/4s、速率为0 +0.12V/3s，绝不脉冲冲击；爬到带顶仍断料才踢一脚（标定+1V×0.5s 回落）。慢加不追速率，连续振幅最高 标定+0.5V，只有真卡粉才踢一脚（0.5s 脉冲后回落）。\n` +
+      `粉末：${powder || "（不选粉，纯闭环）"}\n${brief}\n${gateText}${surgeText}${trimText}\n` +
+      `振幅：快加/粗加走速率闭环——标定 ±0.5V 带内按缺口÷增益调幅，单步 0.05–0.15V，慢了就加、快了就减；`
+      + `顶到带顶还不出才踢一脚（0.5s 高幅脉冲后回落）。慢加不追速率，连续振幅最高 标定+0.5V。\n` +
       `推杆整段锁死、收尾不复位。\n` +
+      slowWarn +
       `运行中请勿手动操作振动/推杆/升降/搅拌。\n确认机构周围安全后继续？`)) return;
   withBusy("cardDisp", () => apiGate("/api/dispense/start", {
     target_mg: target,

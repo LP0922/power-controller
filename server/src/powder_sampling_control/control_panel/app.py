@@ -1257,6 +1257,8 @@ class ActuatorHub:
                        settle_gate: Any = None,
                        settle_gate_rate_mg_s: Any = None,
                        taper_factor: Any = None,
+                       surge_guard: Any = None,
+                       surge_ratio: Any = None,
                        trim_enabled: Any = None,
                        trim_enter_remain_mg: Any = None,
                        trim_pulse_target_mg: Any = None) -> dict:
@@ -1275,6 +1277,9 @@ class ActuatorHub:
                 settle_gate_rate_mg_s=(None if settle_gate_rate_mg_s in (None, "")
                                        else float(settle_gate_rate_mg_s)),
                 taper_factor=None if taper_factor in (None, "") else float(taper_factor),
+                # 段内超速熔断：页面不传就开（默认 2.5 倍），倍率 0 = 关
+                surge_guard=None if surge_guard in (None, "") else bool(surge_guard),
+                surge_ratio=None if surge_ratio in (None, "") else float(surge_ratio),
                 # 缓补：页面不传 trim_enabled 就跟随粉体档案；两个数值留空用算法默认
                 trim_enabled=None if trim_enabled in (None, "") else bool(trim_enabled),
                 trim_enter_remain_mg=(None if trim_enter_remain_mg in (None, "")
@@ -1293,7 +1298,9 @@ class ActuatorHub:
                       stages: list[dict] | None = None,
                       settle_gate: Any = None,
                       settle_gate_rate_mg_s: Any = None,
-                      taper_factor: Any = None) -> dict:
+                      taper_factor: Any = None,
+                      surge_guard: Any = None,
+                      surge_ratio: Any = None) -> dict:
         """只算三阶段计划、不动硬件：页面改目标质量 / 换粉时用它回填参数表。"""
         return self.dispense.preview(
             target_mg, powder=powder or None, category=category,
@@ -1303,7 +1310,9 @@ class ActuatorHub:
             settle_gate=None if settle_gate in (None, "") else bool(settle_gate),
             settle_gate_rate_mg_s=(None if settle_gate_rate_mg_s in (None, "")
                                    else float(settle_gate_rate_mg_s)),
-            taper_factor=None if taper_factor in (None, "") else float(taper_factor))
+            taper_factor=None if taper_factor in (None, "") else float(taper_factor),
+            surge_guard=None if surge_guard in (None, "") else bool(surge_guard),
+            surge_ratio=None if surge_ratio in (None, "") else float(surge_ratio))
 
     def dispense_stop(self) -> dict:
         return self.dispense.stop("操作员停止")
@@ -1562,6 +1571,8 @@ class ControlPageHandler(BaseHTTPRequestHandler):
                 settle_gate=body.get("settle_gate"),
                 settle_gate_rate_mg_s=body.get("settle_gate_rate_mg_s"),
                 taper_factor=body.get("taper_factor"),
+                surge_guard=body.get("surge_guard"),
+                surge_ratio=body.get("surge_ratio"),
                 trim_enabled=body.get("trim_enabled"),
                 trim_enter_remain_mg=body.get("trim_enter_remain_mg"),
                 trim_pulse_target_mg=body.get("trim_pulse_target_mg")),

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,13 +35,43 @@ LIB_DIR = PROJECT_ROOT / "data" / "powder_library"
 LIB_DIR_ALIAS = PROJECT_ROOT / "data" / "powder_library_alias"
 
 
-def _resolve_lib_dir() -> Path:
-    """优先用可读的那个路径：别名联接在就用别名，否则用本名目录。"""
+def _alias_usable() -> bool:
+    """别名目录存在、并且真的能看到档案文件（空目录 / 断链都算不可用）。"""
     try:
-        if LIB_DIR_ALIAS.is_dir():
-            return LIB_DIR_ALIAS
+        return LIB_DIR_ALIAS.is_dir() and any(LIB_DIR_ALIAS.glob("*.json"))
+    except OSError:
+        return False
+
+
+def _make_alias() -> bool:
+    """尽力重建别名联接。用 junction（``mklink /J``）而不是软链接——
+    junction 不需要管理员权限、也不受开发者模式限制，指向的就是同一个目录。
+
+    换机器 / 重新 clone 仓库 / 有人手工删了这个目录之后，这层联接就没了，
+    于是又回到"按路径文本被拦"的老毛病。这里幂等重建一次，失败就静默退回
+    本名目录（行为跟加这层兜底之前完全一样，不影响正常机器上启动）。
+    """
+    try:
+        LIB_DIR_ALIAS.unlink(missing_ok=True)
     except OSError:
         pass
+    try:
+        if not LIB_DIR.is_dir():
+            return False
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(LIB_DIR_ALIAS), str(LIB_DIR)],
+            check=True, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return _alias_usable()
+
+
+def _resolve_lib_dir() -> Path:
+    """优先用可读的那个路径：别名联接在就用别名，否则用本名目录。"""
+    if _alias_usable():
+        return LIB_DIR_ALIAS
+    if _make_alias():
+        return LIB_DIR_ALIAS
     return LIB_DIR
 
 

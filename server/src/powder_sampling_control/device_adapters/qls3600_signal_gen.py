@@ -10,18 +10,20 @@
 - **设备不回读设定值**（无法查询当前频率/幅度/波形），所以本驱动在内存里
   缓存最近一次写入值（:attr:`QLS3600SignalGenerator.state`），仅作参考。
 
-波形编号（协议只给 WA0s~WA32s，未给对照表；按说明书「波形种类」列举顺序排列，
-实测 0/1/2 均被设备接受并回 ``A<n>ok``）：
-    0 正弦波    1 方波    2 三角波    3 升锯齿波    4 降锯齿波
+波形编号（协议只给 WA0s~WA32s；真机实测 **1=三角波、2=方波**，与说明书
+「波形种类」列举顺序相反，已按实测校正；3 以后未逐一上机核对）：
+    0 正弦波    1 三角波    2 方波    3 升锯齿波    4 降锯齿波
     5 半波      6 全波    7 多音频    8 洛伦磁力    9 调幅波
     10 辛克脉冲 11 白噪声 12 指数升   13 指数降    14 梯形波
     15 直流信号 16 升梯形波 17 降梯形波
     18..32 十五组用户自定义任意波（对应存储位 M1..M15）
 
-命令表（来自《QLS3600 通讯协议》）：
+命令表（来自《QLS3600 通讯协议》，★为真机实测校正项）：
     WA<n>s      波形 0..32（33 种，见上方编号表）
     WB<n*100>s  频率，0.01Hz 分辨率（1000.00Hz → WB100000s）
-    WC<n*100>s  幅度（峰峰），0.01V 分辨率（8.00V → WC800s）
+    ★WC<n*1000>s 幅度（峰峰），数值单位 **1mV**：20.00Vpp → WC20000s。
+                 协议文档写的是 n*100，与真机不符——发 WC2000s 时设备屏幕
+                 只显示 2.00V（2026-10-20 实测确认）。
     WE<n*10>s   占空比，0.1%（50.0% → WE500s）
     WD<n>s      偏置，(偏置值+1000)，即 0..2000 ↔ -10.00V..+10.00V
     WF0..3s     测频闸门 0.01/0.1/1/10 s
@@ -107,17 +109,19 @@ class QLS3600State:
 
 # 波形编号 → 名称（0..17 内置波形，18..32 用户自定义任意波）
 WAVEFORM_NAMES: dict[int, str] = {
-    0: "正弦波", 1: "方波", 2: "三角波", 3: "升锯齿波", 4: "降锯齿波",
+    # 1/2 按真机实测校正（2026-10-20）：设备 1=三角波、2=方波，
+    # 与说明书「波形种类」列举顺序相反；3 以后未逐一上机核对。
+    0: "正弦波", 1: "三角波", 2: "方波", 3: "升锯齿波", 4: "降锯齿波",
     5: "半波", 6: "全波", 7: "多音频", 8: "洛伦磁力", 9: "调幅波",
     10: "辛克脉冲", 11: "白噪声", 12: "指数升", 13: "指数降", 14: "梯形波",
     15: "直流信号", 16: "升梯形波", 17: "降梯形波",
 }
 WAVEFORM_NAMES.update({n: f"任意波{n - 17}" for n in range(18, 33)})
 
-# 常用波形常量
+# 常用波形常量（数值与设备实际编号一致，勿按说明书顺序改）
 WAVEFORM_SINE = 0
-WAVEFORM_SQUARE = 1
-WAVEFORM_TRIANGLE = 2
+WAVEFORM_TRIANGLE = 1
+WAVEFORM_SQUARE = 2
 
 
 class QLS3600SignalGenerator:
@@ -195,7 +199,8 @@ class QLS3600SignalGenerator:
     def set_waveform(self, waveform: int) -> None:
         """设置输出波形（0..32）。
 
-        0=正弦波、1=方波、2=三角波……（完整对照见模块文档与 WAVEFORM_NAMES）。
+        0=正弦波、1=三角波、2=方波……（**1/2 与说明书顺序相反，按真机实测**，
+        完整对照见模块文档与 WAVEFORM_NAMES）。
         """
         if not 0 <= int(waveform) <= 32:
             raise ValueError("波形序号必须在 0..32")
@@ -219,20 +224,24 @@ class QLS3600SignalGenerator:
         self.state.frequency_hz = raw / 100.0
 
     def set_amplitude(self, amplitude_vpp: float) -> None:
-        """设置输出幅度（峰峰值，0.01V 分辨率，协议下发值为 幅度×100）。"""
+        """设置输出幅度（峰峰值）。
+
+        下发值为 **幅度 × 1000**（设备按 1mV 步进解析）：20.00Vpp → ``WC20000s``。
+        协议文档写的 ×100 与真机不符，按 ×100 发会把 20V 设成 2V（实测确认）。
+        """
         if not self.config.min_amplitude_vpp <= amplitude_vpp <= self.config.max_amplitude_vpp:
             raise ValueError(
                 f"幅度必须在 {self.config.min_amplitude_vpp}..{self.config.max_amplitude_vpp} Vpp")
-        raw = int(round(amplitude_vpp * 100))
+        raw = int(round(amplitude_vpp * 1000))
         self._command(f"W{self.W_AMPLITUDE}{raw}s")
-        self.state.amplitude_vpp = raw / 100.0
+        self.state.amplitude_vpp = raw / 1000.0
 
     def set_duty(self, duty_percent: float) -> None:
         """设置方波占空比（0.1%..99.9%，协议下发值为 占空比×10）。
 
         **脉冲波就是方波 + 占空比**：设备没有独立的「脉冲波」波形编号，
-        波形选 1（方波）后用本方法改占空比即可得到任意脉宽的脉冲波，
-        占空比 50% 即对称方波。占空比只对波形 1 生效。
+        波形选 2（方波）后用本方法改占空比即可得到任意脉宽的脉冲波，
+        占空比 50% 即对称方波。占空比只方波（波形 2）生效。
         """
         if not 0.1 <= duty_percent <= 99.9:
             raise ValueError("占空比必须在 0.1..99.9 %")
@@ -241,7 +250,7 @@ class QLS3600SignalGenerator:
         self.state.duty_percent = raw / 10.0
 
     def set_pulse_wave(self, duty_percent: float = 50.0) -> None:
-        """切换为脉冲波：波形=方波(1) + 指定占空比（一步到位）。"""
+        """切换为脉冲波：波形=方波(2) + 指定占空比（一步到位）。"""
         self.set_waveform(WAVEFORM_SQUARE)
         self.set_duty(duty_percent)
 
@@ -279,6 +288,57 @@ class QLS3600SignalGenerator:
     def pulse_output(self, enabled: bool) -> None:
         """脉冲输出开关：``Wr1s`` 开 / ``Wr0s`` 关。"""
         self._command(f"W{self.W_PULSE_OUTPUT}{1 if enabled else 0}s")
+
+    # 猝发（burst）：设备自己输出 N 个周期后**自动停**——软件只管触发，
+    # 不用掐表关断，"一次脉冲"的关断时刻由设备硬件保证（2026-10-22 用户指出
+    # 信号发生器自带脉冲，不必用方波开-关去模拟）。
+    W_BURST_COUNT = "M"     # WM<n>s 猝发个数 1..999999
+    W_TRIGGER_MODE = "N"    # WN0s 手动触发 / WN1s 外部触发
+    W_TRIGGER_CTRL = "O"    # WO1s 启动触发功能 / WO0s 停止
+    W_TRIGGER_FIRE = "P"    # WP1s 手动启动触发（发一组猝发）
+
+    def burst_setup(self, count: int) -> None:
+        """配置猝发：WN0s（手动触发模式）+ WM<count>s（个数 1..999999）。
+
+        猝发输出的是**主通道波形**（方波 + 当前频率/幅度/占空比）：
+        设一次 WM<count>s，之后每次 :meth:`burst_fire` 设备自动输出 count 个
+        完整周期后自动停止——单个脉冲的时长粒度 = 1/频率（80Hz 即 12.5ms）。
+        """
+        count = int(count)
+        if not 1 <= count <= 999_999:
+            raise ValueError("猝发个数必须在 1..999999")
+        self._command(f"W{self.W_TRIGGER_MODE}0s")      # 手动触发模式
+        self._command(f"W{self.W_BURST_COUNT}{count}s") # 个数
+        self._burst_count = count
+
+    def burst_arm(self) -> None:
+        """使能触发功能并打开输出（WO1s + Wc1s）——每次 run 只需做一次。
+
+        说明书口径：手动触发要"先使能触发功能、再按触发"。使能后输出通道
+        处于待命状态，:meth:`burst_fire` 才会真正出波。
+        """
+        self._command(f"W{self.W_TRIGGER_CTRL}1s")
+        self._command(f"W{self.W_OUTPUT}1s")
+        self.state.output_on = True
+
+    def burst_fire(self, count: int | None = None) -> dict:
+        """发一组猝发脉冲：WP1s 触发，设备自动输出 count 个周期后停。
+
+        ``count`` 为 None 时沿用 :meth:`burst_setup` 配置的个数。
+        返回预计输出时长（= count / 当前频率）供上层等待。
+        """
+        if count is not None and int(count) != getattr(self, "_burst_count", None):
+            self.burst_setup(int(count))
+        self._command(f"W{self.W_TRIGGER_FIRE}1s")
+        n = int(getattr(self, "_burst_count", 1) or 1)
+        freq = float(self.state.frequency_hz or 0)
+        return {"count": n, "estimated_s": round(n / freq, 3) if freq > 0 else None}
+
+    def burst_off(self) -> None:
+        """关闭触发功能与输出（WO0s + Wc0s）——兜底断振用。"""
+        self._command(f"W{self.W_TRIGGER_CTRL}0s")
+        self._command(f"W{self.W_OUTPUT}0s")
+        self.state.output_on = False
 
     def set_pulse_width_us(self, width_us: float) -> None:
         """脉冲输出脉宽（协议下发值为 us×100）。"""
@@ -400,6 +460,7 @@ class QLS3600SignalGenerator:
     def _exchange(self, frame: str, *, expect_prefix: bool) -> str:
         """发一帧收一行；失败重试 config.retries 次。"""
         last: Exception | None = None
+        last_io: OSError | None = None
         for _ in range(self.config.retries + 1):
             try:
                 port = self._require_port()
@@ -418,9 +479,14 @@ class QLS3600SignalGenerator:
                 return line
             except OSError as error:
                 last = QLS3600CommunicationError(f"QLS3600 串口 I/O 失败: {error}")
+                # 保留原始 OSError 作为 __cause__：上层据此判断"是否为串口 I/O 层失败"，
+                # 决定要不要丢弃句柄重连（PermissionError 往往是句柄失效/端口被占）。
+                last_io = error
             except QLS3600CommunicationError as error:
                 last = error
         assert last is not None
+        if last_io is not None:
+            raise last from last_io
         raise last
 
     @staticmethod

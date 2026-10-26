@@ -106,6 +106,10 @@ class ZDTEmm42Private:
 
     FLAG_ENABLE_BYTE = 0xAB   # 使能/停止指令的固定标志字节
     FLAG_STOP_BYTE = 0x98     # 立即停止指令的固定标志字节（实测漏写会被拒绝）
+    FLAG_CLEAR_STALL_BYTE = 0x52   # 解除堵转保护指令的固定标志字节（手册 6.3.3）
+    STATUS_OK = 0x02          # 应答状态码：执行成功
+    STATUS_CONDITION_FAILED = 0xE2   # 应答状态码：条件不满足（例：本来就没触发堵转保护）
+    STATUS_ERROR = 0xEE       # 应答状态码：错误命令（应答为 地址+0x00+0xEE+校验）
 
     def __init__(self, config: Emm42PrivateConfig, serial_port: Optional[SerialPort] = None,
                  serial_factory: Optional[Callable[..., SerialPort]] = None) -> None:
@@ -170,11 +174,19 @@ class ZDTEmm42Private:
         """
         self.set_speed(0, acceleration=acceleration)
 
-    def clear_stall(self) -> None:
-        """解除堵转保护状态。"""
+    def clear_stall(self) -> bool:
+        """解除堵转保护。返回 True = 真的清掉了，False = 本来就没触发保护。
+
+        帧必须是 ``地址 + 0x0E + 0x52 + 0x6B``：中间的 0x52 是这条指令的固定标志字节
+        （与使能的 0xAB、立即停止的 0x98 同类）。历史版本这里写成 0x00，驱动会回
+        ``01 00 EE 6B``（错误命令）——而旧收帧逻辑只校验首尾字节、不校验状态码，
+        于是"清失败"看起来跟"清成功"一模一样，现场表现为"点了没反应"。
+        """
         frame = bytes((self.config.slave_address, self.CMD_CLEAR_STALL,
-                       0x00, _checksum_6b(b"")))
-        self._exchange(frame, reply_len=4)
+                       self.FLAG_CLEAR_STALL_BYTE, _checksum_6b(b"")))
+        reply = self._exchange(frame, reply_len=4)
+        # 条件不满足 = 当前并没有触发堵转保护，对调用方来说等价于"已经是干净的"
+        return reply[2] != self.STATUS_CONDITION_FAILED
 
     # ------------------------------------------------------------------
     # 状态读取
@@ -243,6 +255,12 @@ class ZDTEmm42Private:
             if reply[-1] != 0x6B:
                 raise Emm42PrivateProtocolError(
                     f"Emm42 private reply tail is not 0x6B: {reply.hex(' ')}")
+            # 错误命令应答固定是 地址 + 0x00 + 0xEE + 校验（手册 6.3.2 每条指令都这么写）。
+            # 以前只校验首尾，错误应答会被当成成功返回，故障就这样被吞成"静默失败"。
+            if len(reply) >= 4 and reply[1] == 0x00 and reply[2] == self.STATUS_ERROR:
+                raise Emm42PrivateProtocolError(
+                    f"Emm42 拒绝该指令（{request.hex(' ')} → {reply.hex(' ')}）："
+                    f"命令字或标志字节不被接受")
             return reply
         except OSError as error:
             raise Emm42PrivateCommunicationError(

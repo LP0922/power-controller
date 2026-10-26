@@ -17,11 +17,13 @@ from .balance_calibration import (
 from .la10_modbus_rtu import LA10Config, LA10ModbusRTU, LA10Status, VibrationSettings
 from .md30_modbus_rtu import (
     BROADCAST_ADDRESS,
+    MD30CommunicationError,
     MD30Config,
     MD30DualLift,
     MD30ModbusRTU,
     MD30Status,
     MD30SyncGuardError,
+    MD30SerialError,
 )
 from .zdt_emm42 import Emm42Config, Emm42Status, ZDTEmm42
 from .zdt_emm42_private import (
@@ -56,11 +58,13 @@ __all__ = [
     "LA10ModbusRTU",
     "LA10Status",
     "VibrationSettings",
+    "MD30CommunicationError",
     "MD30Config",
     "MD30ModbusRTU",
     "MD30Status",
     "MD30DualLift",
     "MD30SyncGuardError",
+    "MD30SerialError",
     "BROADCAST_ADDRESS",
     "Emm42Config",
     "Emm42Status",

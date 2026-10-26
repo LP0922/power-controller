@@ -37,6 +37,15 @@ class MD30CommunicationError(RuntimeError):
     """串口链路未返回完整响应。"""
 
 
+class MD30SerialError(MD30CommunicationError):
+    """串口本身出问题（句柄失效、USB 掉线、写失败）——需要重开句柄。
+
+    与「从站没应答」严格区分：后者只需重试，**绝不能重开串口**。每次重开
+    都会让 USB-485 转换器重新拉 DTR/RTS、清空缓冲，反而把偶发超时放大成
+    持续失联（2026-10-20 实测的正反馈恶化环）。
+    """
+
+
 class MD30ProtocolError(MD30CommunicationError):
     """响应不是合法的 Modbus RTU 帧。"""
 
@@ -48,7 +57,11 @@ class MD30Config:
     baudrate: int = 115200
     timeout_s: float = 0.3
     retries: int = 1
-    max_consecutive_failures: int = 3
+    # 熔断阈值：连续这么多次通讯失败后短路保护（避免每条指令都白等超时）。
+    # 注意一次 read_positions 会重试多轮，阈值太小会被单次抖动误触发（原值 3 实测一下就打满）。
+    max_consecutive_failures: int = 8
+    # 熔断冷却时间：熔断后必须能自恢复，否则只能重启进程才能再通讯。
+    recovery_cooldown_s: float = 1.5
     # 2026-10-20 实测：下限 20 为机械硬限位（寄存器允许 10 但打不到）。
     min_position_raw: int = 20
     max_position_raw: int = 980
@@ -119,6 +132,7 @@ class MD30ModbusRTU:
         self._serial = serial_port
         self._serial_factory = serial_factory
         self._consecutive_failures = 0
+        self._tripped_at = 0.0        # 进入熔断的时刻（monotonic），用于冷却后自动恢复
 
     @property
     def connected(self) -> bool:
@@ -127,6 +141,11 @@ class MD30ModbusRTU:
     @property
     def healthy(self) -> bool:
         return self.connected and self._consecutive_failures < self.config.max_consecutive_failures
+
+    @property
+    def tripped(self) -> bool:
+        """是否处于通讯熔断状态（页面/日志用）。"""
+        return self._consecutive_failures >= self.config.max_consecutive_failures
 
     def connect(self) -> None:
         if self._serial is not None:
@@ -221,8 +240,17 @@ class MD30ModbusRTU:
             raise MD30ProtocolError("MD30 write response does not acknowledge request")
 
     def _transact(self, request: bytes, function: int, response_size: int) -> bytes:
+        import time
+        # 熔断保护：连续失败太多时短路，避免每条指令都白等超时。
+        # ⚠️ 熔断后必须能自恢复——原实现熔断即永久拒绝（成功分支是唯一清零路径，
+        #    既然拒绝就永远不可能成功），只能重启进程才恢复。改为冷却期满自动重试。
         if self._consecutive_failures >= self.config.max_consecutive_failures:
-            raise MD30CommunicationError("MD30 communication failure limit reached")
+            cooled = time.monotonic() - self._tripped_at >= self.config.recovery_cooldown_s
+            if not cooled:
+                raise MD30CommunicationError(
+                    f"MD30(从站 {self.config.slave_address}) 通讯熔断中"
+                    f"（连续 {self._consecutive_failures} 次失败），冷却后自动重试")
+            self._consecutive_failures = 0        # 冷却期满：放行一次探测
         last_error: MD30CommunicationError | None = None
         for _ in range(self.config.retries + 1):
             try:
@@ -231,6 +259,7 @@ class MD30ModbusRTU:
                 self._consecutive_failures += 1
                 last_error = error
                 if self._consecutive_failures >= self.config.max_consecutive_failures:
+                    self._tripped_at = time.monotonic()
                     raise
             else:
                 self._consecutive_failures = 0
@@ -248,12 +277,22 @@ class MD30ModbusRTU:
             port.flush()
             header = self._read_exactly(port, 2)
             if header[0] != self.config.slave_address or header[1] != function:
-                raise MD30ProtocolError("MD30 response address or function mismatch")
+                raise MD30ProtocolError("response address or function mismatch")
             frame = header + self._read_exactly(port, response_size + 2)
             self._validate_crc(frame)
             return frame[2:-2]
         except OSError as error:
-            raise MD30CommunicationError(f"MD30 serial I/O failed on {self.config.port}: {error}") from error
+            # 串口级故障：上层需要丢弃句柄重连，所以用专门的异常类型区分。
+            raise MD30SerialError(
+                f"MD30(从站 {self.config.slave_address}) 串口 I/O 失败 on {self.config.port}: {error}") from error
+        except MD30ProtocolError as error:
+            # 协议错要保持原类型（调用方按类型区分"没应答"和"应答乱了"）。
+            raise MD30ProtocolError(
+                f"MD30(从站 {self.config.slave_address}) {error}") from error
+        except MD30CommunicationError as error:
+            # 补上从站地址：双机总线出问题时必须一眼看出是哪一台不回话。
+            raise MD30CommunicationError(
+                f"MD30(从站 {self.config.slave_address}) {error}") from error
 
     @staticmethod
     def _read_exactly(port: SerialPort, size: int) -> bytes:
@@ -261,7 +300,7 @@ class MD30ModbusRTU:
         while len(data) < size:
             chunk = port.read(size - len(data))
             if not chunk:
-                raise MD30CommunicationError("MD30 response timed out")
+                raise MD30CommunicationError("response timed out")
             data.extend(chunk)
         return bytes(data)
 
@@ -270,7 +309,7 @@ class MD30ModbusRTU:
         expected = modbus_crc16(frame[:-2])
         received = int.from_bytes(frame[-2:], "little")
         if expected != received:
-            raise MD30ProtocolError("MD30 CRC mismatch")
+            raise MD30ProtocolError("CRC mismatch")
 
     def _require_port(self) -> SerialPort:
         if self._serial is None:
@@ -333,10 +372,11 @@ class MD30DualLift:
     def __init__(self, port: str, slave_addresses: tuple[int, int] = (1, 2),
                  baudrate: int = 115200, timeout_s: float = 0.3,
                  default_speed: int = 30, serial_factory: Optional[Callable[..., SerialPort]] = None,
-                 sync_tolerance_raw: int = SYNC_TOLERANCE_RAW) -> None:
+                 sync_tolerance_raw: int = SYNC_TOLERANCE_RAW,
+                 max_position_raw: int = 980) -> None:
         self._configs = [MD30Config(port=port, slave_address=a, baudrate=baudrate,
                                     timeout_s=timeout_s,
-                                    min_position_raw=20, max_position_raw=980)
+                                    min_position_raw=20, max_position_raw=max_position_raw)
                          for a in slave_addresses]
         self._drivers = [MD30ModbusRTU(c, serial_factory=serial_factory) for c in self._configs]
         self._port = port
@@ -386,18 +426,38 @@ class MD30DualLift:
     def _read_positions_with_retry(self, attempts: int = 3, delay_s: float = 0.15) -> list[MD30Status]:
         """读双机状态（运动中电气干扰可能造成偶发读错，重试几次再下结论）。
 
+        ‼️ 两台**各自独立读取**：原实现用列表推导，第一台失败就直接抛出，
+        第二台根本不读——一台通讯差会让双机状态整体不可用，排障时也看不出
+        到底是哪一台不回话。现在每台单独记录失败原因。
+
         调用方需持有锁。
         """
         import time
-        last_error: Exception | None = None
+        errors: list[str] = []
+        serial_broken = False
         for _ in range(attempts):
-            try:
-                return [driver.read_status() for driver in self._drivers]
-            except Exception as error:  # noqa: BLE001 - 重试到次数用尽
-                last_error = error
-                time.sleep(delay_s)
-        assert last_error is not None
-        raise last_error
+            statuses: list[MD30Status] = []
+            errors = []
+            serial_broken = False
+            for driver in self._drivers:
+                try:
+                    statuses.append(driver.read_status())
+                except Exception as error:  # noqa: BLE001 - 逐台记录，最后统一上报
+                    errors.append(f"从站{driver.config.slave_address}({error})")
+                    if isinstance(error, (MD30SerialError, OSError)):
+                        serial_broken = True
+            if not errors:
+                return statuses
+            if serial_broken:
+                break   # 句柄已经坏了，再重试只是白等超时、白刷日志
+            time.sleep(delay_s)
+        message = "读取双机状态失败：" + "；".join(errors)
+        # ‼️ 串口级故障必须按 MD30SerialError 抛出去：上层靠这个类型决定
+        # "重开串口"。原来一律包成基类，上层的 isinstance 判断永远不成立，
+        # 句柄僵死后只能重启进程（2026-10-20 COM10 僵死 32 分钟即此原因）。
+        if serial_broken:
+            raise MD30SerialError(message)
+        raise MD30CommunicationError(message)
 
     def _emergency_stop_both_locked(self) -> None:
         """同步急停双机（调用方需持有锁）。
@@ -408,7 +468,8 @@ class MD30DualLift:
         """
         import time
         try:
-            positions = [s.position_raw for s in self._read_positions_with_retry()]
+            # 急停路径只读 1 次：电机还在跑，重试 3 轮要等 ~4s，等不起。
+            positions = [s.position_raw for s in self._read_positions_with_retry(attempts=1)]
             average = int(round(sum(positions) / len(positions)))
             average = max(min(average, self._drivers[0].config.max_position_raw),
                           self._drivers[0].config.min_position_raw)
@@ -469,7 +530,9 @@ class MD30DualLift:
             # ---- 保障 2：起跳监督（0.35s 后确认两台都离开原位）----
             time.sleep(0.35)
             try:
-                after = self._read_positions_with_retry(attempts=3)
+                # 只重试 2 轮：读不回来就要立刻急停，不能为了"多读几次"让双机
+                # 在状态不明的情况下继续跑（每轮 2 台 × 2 次 × 0.3s 超时）。
+                after = self._read_positions_with_retry(attempts=2)
             except Exception as error:  # noqa: BLE001
                 # 状态读不回来 = 无法确认同步，安全原则：立即停。
                 self._emergency_stop_both_locked()
@@ -528,9 +591,28 @@ class MD30DualLift:
         return abs(statuses[0].position_raw - statuses[1].position_raw)
 
     def read_positions(self) -> list[MD30Status]:
-        """读两台状态（位置/速度/负载/电压/运动标志），按从站地址顺序返回。"""
+        """读两台状态（位置/速度/负载/电压/运动标志），按从站地址顺序返回。
+
+        与 :meth:`_read_positions_with_retry` 一样逐台独立读取，任一失败都
+        会抛错（但错误里能看出是哪一台、什么原因）。
+        """
         with self._lock:
-            return [driver.read_status() for driver in self._drivers]
+            statuses: list[MD30Status] = []
+            errors: list[str] = []
+            serial_broken = False
+            for driver in self._drivers:
+                try:
+                    statuses.append(driver.read_status())
+                except Exception as error:  # noqa: BLE001 - 逐台记录
+                    errors.append(f"从站{driver.config.slave_address}({error})")
+                    if isinstance(error, (MD30SerialError, OSError)):
+                        serial_broken = True
+            if errors:
+                message = "读取双机状态失败：" + "；".join(errors)
+                if serial_broken:
+                    raise MD30SerialError(message)
+                raise MD30CommunicationError(message)
+            return statuses
 
     def wait_until_stopped(self, *, timeout_s: float = 30.0,
                            poll_interval_s: float = 0.4) -> list[MD30Status]:
