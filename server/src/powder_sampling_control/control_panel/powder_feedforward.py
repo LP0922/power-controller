@@ -101,7 +101,7 @@ POINT_MIN_RATE_MG_S = 0.05       # 低于它视作"这一段根本没出粉"
 
 
 # 前馈自修正系数：标定表说"开 300 出 10 mg/s"，实际只出了 8.5，就说明表偏乐观，
-# 下次同级目标要把开度再开大一点。限幅防止一炉跑歪就把整张表带跑偏。
+# 下次同级目标要把开度再开大一点。限幅防止一次加粉跑歪就把整张表带跑偏。
 CORRECTION_DEFAULT = 1.0
 CORRECTION_MIN = 0.5
 CORRECTION_MAX = 1.8
@@ -435,7 +435,7 @@ class PowderWorkspace:
         - 反解结果一律夹在标定过的最小/最大开度之间，绝不外推开度。
 
         实际反解用的是 ``目标 / 修正系数``：标定表只测过一遍，而粉的湿度、粒径分布
-        每次都会变；每炉结束后用实测/预测的比值把它慢慢修回来（见 ``record_run``）。
+        每次都会变；每次加粉结束后用实测/预测的比值把它慢慢修回来（见 ``record_run``）。
         """
         if self.feedforward is None:
             return {"rod_units": None, "rate_mg_s": None, "achievable": False,
@@ -577,7 +577,7 @@ class PowderWorkspace:
         return max(CORRECTION_MIN, min(CORRECTION_MAX, value))
 
     def record_run(self, stages: list[dict], *, accepted: bool) -> dict | None:
-        """用一炉的实测结果修正前馈系数（老系统 ILC 的最小可用版本）。
+        """用一次加粉的实测结果修正前馈系数（老系统 ILC 的最小可用版本）。
 
         做法：对每一段，比较"实际达成的平均速率"和"标定表在该开度上的预测速率"，
         得到比值；取三段中位数作为本次样本，再按 ``CORRECTION_ALPHA`` 指数平滑。
@@ -647,7 +647,7 @@ class PowderWorkspace:
     def record_settle_gain(self, transition: str, gain_mg: float) -> dict:
         """记住某种粉在某次切段时的惯性落料量（指数平滑，限幅 0–50mg）。
 
-        这一炉切段时停振后还落下来多少粉，就是下次该把切换点提前多少——
+        这一次加粉切段时停振后还落下来多少粉，就是下次该把切换点提前多少——
         不提前的话，余料会直接顶进下一段（粗加一开场就超标、慢加要倒着补）。
         """
         section = self.raw.setdefault(SETTLE_SECTION, {})
@@ -951,6 +951,16 @@ def powder_detail(name_or_id: str) -> dict:
         "correction": section.get("correction") or {},
         "correction_factor": workspace.correction(),
         "points": points,
+        # 三阶段配方（stage_recipe_v1）：操作者在页面上定下的三段工作点
+        # （搅拌/推杆/振幅基准/目标速率/占空比/切点）。它和 feedforward_v2 的标定点
+        # 是两件事：标定点回答"这个工况能出多少 mg/s"，配方回答"这一次打算怎么跑"。
+        # 这里纯透传给页面展示，不参与后端算计划（振幅基准仍以页面那一行为准）。
+        "stage_recipe": workspace.raw.get("stage_recipe_v1") or None,
+        # 加粉标记（dispense_flags）：粉末级的特殊行为开关，目前只有封堵剂2 用——
+        #   zero_rate_pulse=false  → 加粉速率为 0 时不许踢脚脉冲（其他粉都允许）
+        #   slow_amp_span_vpp=1.0  → 慢加振幅带放宽到 基准±1.0V（2.00V → 1.00–3.00V）
+        # 这里纯透传给页面展示，真正生效在 dispense_runner._build_plan。
+        "dispense_flags": workspace.raw.get("dispense_flags") or None,
         "file": workspace.path.name,
     }
 

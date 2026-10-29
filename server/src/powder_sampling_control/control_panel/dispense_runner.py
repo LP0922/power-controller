@@ -124,7 +124,11 @@ TARGET_MIN_MG = 100
 TARGET_MAX_MG = 20000
 
 # ── 振幅调节（2026-10-22 用户改口径：基准是标定值，慢加一律不动）─────────────
-AMP_MIN_VPP = 1.0
+# 2026-10-27 11:08 用户："1V 下限删掉，最低下限 0.01V"。
+# 原来卡 1.0V 是软件自己定的，设备（QLS3600S）本身就能从 0.01V 起（驱动
+# `QLS3600Config.min_amplitude_vpp = 0.01`）。快加/粗加各有自己的带下界
+# （base−0.5 = 2.5 / 2.0），所以放开这里只影响慢加和异常降幅路径。
+AMP_MIN_VPP = 0.01
 AMP_MAX_VPP = 4.0
 # 振动参数：**按粉记住**（2026-10-21 用户定，第三次修正）——
 # 每种粉的标定就是它自己的工作点，加粉时必须换回它当初标定时用的频率/占空比：
@@ -158,9 +162,10 @@ VIB_DUTY_PERCENT = 50.0
 #  6. **起振门槛实测（2026-10-22 12:38 真机脉冲测试，杆 680 开度、方波 80Hz）**：
 #     2Vpp 0.6s×3发+3s长发 = 一粒不出（0mg）；3Vpp 0.6s = +37mg；3.5Vpp 0.6s = +23/+20mg；
 #     3Vpp 0.3s = +5mg。**结论：粉位低时标定振幅可能整段低于起振门槛**，门槛在 2~3V 之间，
-#     3V 以上短脉冲就能出料。所以断料救济的上探上限从 标定+0.6V 放宽到 标定+1.5V、
-#     步长加大到 0.5V/步（两步就跨过门槛），一旦某档振幅落了粉就把该值记为"起振门槛"，
-#     本段后续的微调带以 max(标定值, 门槛−0.2V) 为中心。
+#     3V 以上短脉冲就能出料。所以断料救济的上探上限从 标定+0.6V 放宽到 标定+1.5V。
+#     （旧版还有"落了粉就把该档记为起振门槛、微调带以 max(标定, 门槛−0.2V) 为中心"——
+#     这套门槛学习 2026-10-27 11:44 已被用户整体否掉：门槛只由页面填的值决定，踢脚
+#     回来就回到踢前的振幅，不做任何上移。）
 #  7. **慢加也允许卡粉救济**（用户 12:38："粗加和慢加的时候都会有卡粉的情况"）：
 #     慢加的"速率微调"依旧禁止（追不上就认），但**真卡粉**（一个生效窗 0 落料且无阶跃）
 #     允许走同一条救济通道——卡粉不是"追速率"，是"恢复出料"。
@@ -180,6 +185,16 @@ AMP_KICK_DELTA_V = 1.00      # 踢一脚：振幅瞬间抬到 标定+1.0V（2.0�
                              # 3V 短脉冲 +37mg、2V 一粒不出——一脚跨过起振门槛）
 AMP_KICK_HOLD_S = 0.50       # 高幅持续 0.5s 后立刻回落标定值（用户 13:31 定）
 AMP_KICK_ESCALATE_V = 0.50   # 一脚没踢开，下一脚在此基础上再 +0.5V（顶=标定+1.5V）
+# 到顶之后怎么办（2026-10-27 16:25 修 bug）：以前"振幅不能再往上"就判"踢粉到顶、
+# 永久停手"，可当时往往只踢过**一脚**（16:19 那次加粉润滑剂1：anchor 已被速率环抬到带顶
+# 2.50V，第一脚 2.50+1.00=3.50V 正好等于硬顶 3.50V，第二脚算出来还是 3.50V ≤ 上一脚
+# → 直接锁死，全程真正踢到的只有 1 脚，而那一脚其实踢出了 9mg）。
+# 现在的口径：硬顶只是"振幅不再加"，**在硬顶振幅上可以反复踢**，用"连续空踢脚数"判停。
+AMP_KICK_MAX_TRIES = 8       # 本段踢脚总脚数上限（含到顶后的重复踢），超了也停手
+AMP_KICK_MIN_TRIES_BEFORE_STOP = 4   # 到顶后至少踢这么多脚，才允许用"累计没出料"判停
+AMP_KICK_MIN_TOTAL_GAIN_MG = 5.0     # 这几脚**累计**增重低于此值 = 真没料
+                                     # （必须用累计：单拍质量差只有天平噪声那么大，
+                                     #   一脚本来也只出 4~8mg，按单拍判会永远"踢出了料"）
 AMP_STALL_GAIN_FLOOR = 0.8   # 增益学习：k_est 低于此值(mg/s per V) = 升幅无效，不再升
 AMP_ACCEL_GATE_RATIO = 0.15  # 趋势闸：速率回升超过目标×此值 → 上一发还在生效，先等
 AMP_STALL_RATE_RATIO = 0.30  # 实测速率低于目标的这个比例 → 判为断料（不是"偏慢"）
@@ -200,7 +215,7 @@ AMP_RAMP_INTERVAL_ZERO_S = 3.0   # 零落料爬坡 3s 一档
 # 平时调节 = 自适应小步：按"前 5s 平均速率 + 加速度"外推纯滞后后的速率走向，
 # 缺口 ÷ 增益(k_est) 换算步长，钳在 0.05–0.15V——丝滑不跳变。
 # 为什么被取代：步长上限 0.15V + 必须写幅后 4s 才评估，一个 12mg/s 的缺口要磨
-# 七八十秒，而粗加段往往撑不到那么久（400mg 那炉 71s 全程 2.50V、平均 3.95mg/s）。
+# 七八十秒，而粗加段往往撑不到那么久（400mg 那次加粉 71s 全程 2.50V、平均 3.95mg/s）。
 AMP_EVAL_INTERVAL_S = 2.0     # （v7 legacy）
 AMP_LOOKBACK_S = 5.0          # （v7 legacy）
 AMP_REEVAL_MIN_S = 4.0        # （v7 legacy）
@@ -212,6 +227,17 @@ AMP_KICK_GATE_WINDOW_S = 4.0  # 踢脚 gate：到顶后观察窗 4s
 AMP_KICK_GATE_RATE_MG_S = 1.0 # 踢脚 gate：4s 内速率 <1 mg/s 才算"长时间无速率"
 AMP_SLOW_CLIMB_STEP_V = 0.10  # 慢加零落料爬坡每档 +0.10V（涓流）
 AMP_SLOW_CLIMB_INTERVAL_S = 2.0
+AMP_SLOW_DOWN_MAX_V = 0.30    # 慢加**降幅**单步上限（2026-10-27 11:02 修 bug 新增）
+                              # 慢加段的任务就是把速率压到 5mg/s，2.0V 实测 19~24mg/s
+                              # （超 4 倍）时必须快速往下收；0.15V/步太慢，慢加段
+                              # 只有 5~15s，还没降到位就切段了。降幅不会超调：
+                              # 低于起振门槛最坏是断料，踢一脚能救；反过来冲过头是报废。
+AMP_SLOW_FLOOR_VPP = AMP_MIN_VPP   # 慢加下界 = 设备绝对下限 0.01V（2026-10-27 11:08 用户
+                                   # "1V 下限删掉，最低下限 0.01V"；原先 基准−1.0V=1.0）。
+                                   # 只有慢加需要往低走：目标才 5mg/s，2.0V 常有 15~25mg/s。
+                                   # 上限仍按 基准+0.5V 不放。
+AMP_SLOW_EVAL_S = 1.5         # 慢加评估间隔（默认 3.0s 太长：慢加段本身只有 5~15s，
+                              # 3s 一评估全程只能走 1~2 步，等于没调）。
 
 # ── 速率闭环（2026-10-23 11:33 立，11:50 用户收回上限/步长口径）───────────────
 # 用户原话："前面粗加阶段长时间 6-12mg/s，但是你也不提升幅度……你就一直改动幅度
@@ -248,6 +274,18 @@ AMP_CTRL_RAISE_SPAN_V = 0.50   # 自动升幅跨距 = 标定 +0.5V（标定 2.5V
 AMP_CTRL_CEIL_VPP = 5.0        # 设备层安全兜底（20Vpp 量程），实际被 RAISE_SPAN 卡在 标定+0.5V
 AMP_CTRL_ZERO_STEP_V = 0.15    # 近 6s 一粒粉没落（断料/搭桥）时的爬坡步长（同样受 0.15V 限制）
 AMP_CTRL_ZERO_WAIT_S = 3.5     # 断料爬坡间隔
+
+# ── 进段起步振幅：上一段甩太快就先压下来（2026-10-26 18:04 现场）──────────────
+# 那次加粉（2000mg 封堵剂2）的账：快加 22.2s 跑到 1455mg（65.58 mg/s，目标 49.29），
+# 进粗加后 **3.0s 冲到 1831mg = 125.88 mg/s（目标 20 的 6.3 倍）**，振幅环的
+# 响应窗（AMP_CTRL_MIN_EVAL_S=3.0s）整个走完都还没到评估点，一次没调幅。
+# 接着切段沉降余料 +127mg 把慢加顶到 1958（只剩 42mg 空间），慢加 0.9s 只出 20mg，
+# 进缓补时腔里存料崩落 +89mg → 0 发脉冲、超验收 48mg、最终 2083（+83mg）。
+# 物理原因不是"粗加加太快"，是**进段把上一段的料流惯性原样带过来了**：推杆 525 没动，
+# 管腔里全是料，只把搅拌 100→50rpm、振幅 2.57→2.50V 根本压不住存量倾泻。
+# 规矩：上一段实测速率 ≥ 本段目标 × 这个倍率时，起步振幅按 k_est 往下压，
+# **压到本段振幅带下界为止**（再往下就空振不出料，由踢脚去救）。
+STAGE_ENTRY_RATE_RATIO = 3.0
 
 
 # 每段的判据参数（慢加不在这里——慢加只走卡粉救济，不走速率微调）
@@ -310,12 +348,14 @@ SURGE_AMP_CUT_V = 0.10          # 每次熔断把振幅压下来这么多（塌�
 SURGE_AMP_CUT_MAX = 3           # 一次加粉最多降这么多档（降多了会把自己降进死区，出不了料）
 SURGE_MAX_TIMES = 15            # 单次加粉最多熔断次数（到数就不再熔断，交给原逻辑）
 SURGE_MIN_GAIN_MG = 5.0         # 短窗增重太小就不判（1count=1mg 的噪声挡掉）
-# 塌料够大就**别再连续加**了，直接转"脉冲一发一称"（2026-10-26 11:33）：
-# 这一层是"没触发脉冲还超重"的正面解法——现场那几炉的粉一旦塌下来，料道里的存量
-# 会自己往下走 1~2s（停振后还落 33~102mg），连续加料等于往塌方上再铲土；改成脉冲
-# 后"出料"和"称重"在时间上分开，每发落多少由天平说了算。
-SURGE_TO_PULSE_MG = 60.0        # 一次熔断期间又落 ≥60mg → 认定料道还在塌，转脉冲模式
-SURGE_TO_PULSE_RATE_MG_S = 180.0  # 或者短窗速率 ≥180mg/s → 转脉冲模式
+# 塌料够大就**别再连续加**了 —— 但出口不是缓补，是**提前切段**（2026-10-26 18:35 用户：
+# "熔断只发生在阶段切换之间就行了"）。熔断的语义 = "这一段到此为止"：停振、余料落定、
+# 交给下一段用更低的速率/振幅接着加；剩余量永远不由脉冲整包兜底。
+# 旧版（11:33 加的 `to_pulse`）把剩余量全塞给缓补脉冲：26% 进度就跳进"缓补"，
+# 单发 ~100mg、粗加和慢加整段被绕过——那是把"安全出口"当成了"主通道"。
+# 判据只看"停振之后还在不在落"：短窗速率高但停振期间一两粉没再落，说明那一坨已经
+# 落完了（sim 里 300mg 一次性塌料就是这种），本段继续加就行，不该越级跳到慢加。
+SURGE_ADVANCE_MG = 60.0         # 熔断停振期间又落 ≥60mg → 料道还在塌，本段提前结束
 
 # ── 切段沉降门 + 提前降幅（2026-10-21 用户批准，重粉必需）──────────────────
 # 快加/粗加以高速率切出时，料槽里的粉还在落：切段那一刻"质量到位"不等于"落完了"。
@@ -330,10 +370,26 @@ SURGE_TO_PULSE_RATE_MG_S = 180.0  # 或者短窗速率 ≥180mg/s → 转脉冲�
 SETTLE_GATE_RATE_RATIO = 1.5           # 切出速率 / 本段规定速率 的门槛倍率
 SETTLE_GATE_MIN_TRIGGER_MG_S = 3.0     # 比例门槛的绝对下限（防低速段门槛低到必然触发）
 SETTLE_GATE_LEAD_S = 1.0               # 预测切段：质量 + 速率×1s 够到切点就提前停振
-SETTLE_GATE_MAX_S = 1.2                # 单次等待上限：重粉落料短，超时就用当前质量切
-SETTLE_GATE_STABLE_MG = 2.0            # 判稳：窗口内极差
-SETTLE_GATE_SAMPLES = 5                # 判稳：窗口样本数（5×0.1s ≈ 0.5s）
-SETTLE_GATE_RATE_EPS_MG_S = 0.5        # 判稳：窗口斜率上限 mg/s
+SETTLE_GATE_MAX_S = 8.0                # 单次等待**硬上限**（2026-10-27 11:35 从 1.2 → 8.0）
+                                       # 旧值 1.2s 是致命错误：重粉停振后料道里的粉要好几秒
+                                       # 才落得完，1.2s 到点就切 = 材料还在半空就把下一段的
+                                       # 振幅/推杆全开（11:19 那次加粉沉降 +127mg、11:06 +93mg，
+                                       # 全是"1.2s 到点、stable=False"）。真正的出口是判稳，
+                                       # 这个上限只防"永远等下去"。
+SETTLE_GATE_DROP_MG = 2.0              # 判稳：一个 hold 窗口内净增重 ≤ 此值 = 料走完了
+SETTLE_GATE_HOLD_MIN_S = 2.0           # 判稳：窗口最少这么长
+SETTLE_GATE_HOLD_MAX_S = 5.0           # 判稳：窗口最长（由落料周期 T_est 决定，钳在此区间）
+                                       # 判据 = **一个完整落料周期内净增重 ≤2mg**（≈0.4mg/s）。
+                                       # 旧判据是"5 个样本(0.5s)极差 ≤2mg 且斜率 ≤0.5mg/s"——
+                                       # 脉冲式落料两坨之间本来就静，0.5s 窗随便就能满足，
+                                       # 等于没判稳；而单拍阈值又会被天平 ±1mg 抖动反复触发。
+SETTLE_GATE_STIR_OFF_S = 2.0           # 停振后这么久还没判稳 → **把搅拌也减速停**。
+                                       # 漏料型粉（润滑剂1 实测：振动关着、搅拌 100RPM 时
+                                       # 仍有 ≈5mg/s 往下塌）光停振永远判不稳，搅拌本身在推料；
+                                       # 不停它就只能等满上限、带着 40mg 余料进下一段。
+                                       # 停搅拌后下一段 `_enter_stage` 会按该段配方重新起转。
+SETTLE_GATE_STIR_OFF_EXTRA_S = 4.0     # 停搅拌后额外给的判稳时间（余料还要走一小段）
+SETTLE_GATE_STIR_OFF_RATE_MG_S = 3.0   # 停搅拌的触发速率：近 1.2s 仍 ≥3mg/s 才算"搅拌在推料"
 # 提前降幅：距切点还有"当前速率 × 系数"mg 时，先把振幅压到下一段的预置值，
 # 让流速在切点之前就下来——沉降门只需收最后几 mg，不会站那儿干等。
 TAIL_TAPER_FACTOR = 0.6
@@ -372,19 +428,42 @@ TRIM_PULSE_MAX_N = 24         # 脉冲发数上限（防死循环；24 发 × 0.
 TRIM_PULSE_MODE = "burst"
 # 每发脉冲后的称重等待（2026-10-23 用户要求"每缓补一次等 2~3s，再按重量决定要不要补下一发"）。
 # 为什么必须有下限：猝发刚停那 1s 里秤上极差很快收窄到 2mg，但粉还在输送段往下走，
-# 0.9s 就判"落定"等于把"暂时不动"当成"落完了"（10-23 那炉 205mg 判稳收工、最终漂到 211mg）。
+# 0.9s 就判"落定"等于把"暂时不动"当成"落完了"（10-23 那次加粉 205mg 判稳收工、最终漂到 211mg）。
 # 下限 2s 等够尾料，上限 3s 兜住"永远等不到稳"的情况，到点用当前读数继续。
 TRIM_SETTLE_MIN_S = 2.0
 TRIM_SETTLE_MAX_S = 3.0
-# 缓补入口等慢加尾料：尾料是几十 mg 量级（10-23 那炉 161→205mg，44mg），
+# 缓补入口等慢加尾料：尾料是几十 mg 量级（10-23 那次加粉 161→205mg，44mg），
 # 给足时间落干净再发第一发，否则第一发的增重里混着尾料，自适应时长全是错的。
 TRIM_TAIL_SETTLE_MAX_S = 8.0
+# 进缓补的**第一段观察窗**（2026-10-26 18:04 用户："慢加之后的缓补好像没有等待粉末沉积"）：
+# 先只停振、**搅拌保持**这么久，再停搅拌。那次加粉 1978 → 2048 的 +70mg 全落在
+# "停振"和"stir_stop 串口回来"之间（约 0.4s），程序既没等也没看见，一读数就越过
+# 2010 停手线，缓补 0 发脉冲收场。给一个明确窗口，让沉积真的有一次"被等"的机会，
+# 顺带能分清崩落是停振引起的还是停搅拌（急停）引起的。
+TRIM_ENTRY_HOLD_S = 1.2
 TRIM_STABLE_RANGE_MG = 2.0    # 判稳：约 1s 窗口内极差 ≤2mg 视为落定
 TRIM_NO_GAIN_LIMIT = 6        # 连续多少发完全没出粉就停手（每发之间振幅上抬试探）
 TRIM_PULSE_AMP_RAISE_V = 0.5  # 已废弃（保号不删，防外部脚本 import 报错）：
                               # 现在抬幅走 `_trim_escalate_on_no_gain`，每发没出 +0.5V。
+# ── 缓补**存粉保护**（2026-10-28 14:30 用户，抑制剂 3000mg 病案）──────────────
+# 现场：粗加中途长时间不出粉（搅拌 150RPM 一直转，粉全挂在料道里），最后几秒
+# 料道一松倾泻：判停时 2987mg 还差 3mg 进带，此后"只要搅拌一丢就出大量粉末"，
+# 缓补 0 发脉冲、收尾称重却涨到 3052（+52 偏重）。
+# 用户方案："不搅拌，先低幅度振动试试，再慢慢加振动"——存粉时搅拌是倾泻的扳机，
+# 振动才是细水长流的阀门。
+# 触发判据：**缓补入口泄料 ≥ TRIM_STOCK_GAIN_MG**（停振+停搅拌两段观察窗的合计
+# 落料，那次加粉实测 +19mg 还只是冰山一角）。只用于正常缓补（hold_amp 定幅补差
+# 振幅锁定是 2026-10-27 的独立规矩，不掺）。
+# 存粉模式下：每发**不起搅拌**、振幅从 TRIM_STOCK_AMP_START_VPP 起步、
+# 没出粉每发只 +TRIM_STOCK_AMP_STEP_VPP（比正常模式的 0.5V 温柔得多）；
+# 出了粉就停在这档慢慢出（不退档不抬档）；连续 TRIM_STOCK_MAX_NOGAIN 发没出粉
+# 才转回正常脉冲模式（起搅拌），振幅也恢复到进缓补时的值。
+TRIM_STOCK_GAIN_MG = 15.0
+TRIM_STOCK_AMP_START_VPP = 1.0
+TRIM_STOCK_AMP_STEP_VPP = 0.2
+TRIM_STOCK_MAX_NOGAIN = 8
 # ── 缓补脉冲振幅（2026-10-23 12:16 用户纠正：**不许一步跳到 4V**）────────────
-# 现场那炉 300mg/润滑剂1：前两发 2.2V 没出粉，第三发直接跳 4.0V ——用户明确：
+# 现场那次加粉 300mg/润滑剂1：前两发 2.2V 没出粉，第三发直接跳 4.0V ——用户明确：
 # "不应该这样，而是调节到 2.7V 即可"。起振门槛常常只比当前值高半档，一步跳到 4V
 # 那一发就多冲 20~30mg（4V 满流实测 28mg/s），直接偏重。
 # 所以改成**每发没出粉只抬 0.5V**：2.2 → 2.7 → 3.2 → 3.7 → 4.2 …顶 5.0V。
@@ -394,14 +473,15 @@ TRIM_AMP_NO_GAIN_STEP_VPP = 0.5   # 每发完全没出粉，振幅上抬这么�
 # ── 缓补振幅**也要能往下走**（2026-10-23 16:05 用户定的规矩）──────────────────
 # 用户原话："同一幅度第二次脉冲要根据上次的增重来判断，比如这次同一幅度加多了太多，
 # 应该稍微减小一些幅度"。
-# 那炉（1200mg/抑制剂）的现场：3.10V 第一发 +12mg、第二发 **+38mg**，同样 0.60s、
+# 那次加粉（1200mg/抑制剂）的现场：3.10V 第一发 +12mg、第二发 **+38mg**，同样 0.60s、
 # 同样振幅，出料量差 3 倍；而程序只会在"没出粉"时往上抬，**从来不降**，
 # 于是剩 13mg 还照发一整发 3.10V，直接冲到 1225（+25mg）。
 # 所以补两条：① 剩的量已经接近"这档振幅上一发出了多少" → 发之前先降一档；
 #          ② 同一振幅下这一发比上一发暴涨 → 判为放量，降一档给下一发用。
-# 下限取"最近一次完全没出粉的振幅 + 0.25V"（低过它就是白振），再兜一个 1.0V。
+# 下限取"最近一次完全没出粉的振幅 + 0.25V"（低过它就是白振），再兜设备绝对下限。
 TRIM_AMP_DOWN_STEP_VPP = 0.30     # 降幅一档（升是 0.5，降比升细）
-TRIM_AMP_FLOOR_VPP = 1.00
+TRIM_AMP_FLOOR_VPP = AMP_MIN_VPP  # 0.01：2026-10-27 11:08 用户"1V 下限删掉，最低 0.01V"。
+                                  # 真正的有效地板还是 dead+0.25（实测死点），这里只是兜底。
 TRIM_AMP_DEAD_MARGIN_V = 0.25     # 地板 = 起振死点 + 这个余量
 TRIM_AMP_OVER_RATIO = 1.5         # 剩余量 < 同振幅上发增重 ×1.5 → 发之前先降幅
 TRIM_AMP_BLOWUP_RATIO = 1.8       # 同振幅下本发增重 ≥ 上发 ×1.8 → 判放量，降幅
@@ -420,12 +500,12 @@ TRIM_AMP_BLOWUP_RATIO = 1.8       # 同振幅下本发增重 ≥ 上发 ×1.8 �
 # **一次退 1.0V**（2026-10-26 10:44 用户："回退机制再强力一点，一次回退 1V，比如
 # 3.5V 脉冲出了就回退到 2.5V"）：退档不再以 3.0V 为地板——3.5V 出粉就退到 2.5V，
 # 4.0V 出粉退到 3.0V，4.5V 退到 3.5V。退下去那档若一粒不出，会走"抬 0.5V"回来，
-# 由 `_trim_backoff_target` 防抖（同一炉不再退到同一档 → 认定该档是工作点，不再试）。
+# 由 `_trim_backoff_target` 防抖（同一次加粉不再退到同一档 → 认定该档是工作点，不再试）。
 # 注意"触发条件"与"退到哪"是两件事：**只有 >3V 才触发回退，但退到的目标可以低于 3V**。
 TRIM_AMP_BACKOFF_MIN_VPP = 3.00   # 回退**触发线**：振幅 > 这个值出粉才回退
 TRIM_AMP_BACKOFF_STEP_VPP = 1.00  # 一次退 1.0V（3.5→2.5、4.0→3.0、4.5→3.5）
 TRIM_GAIN_TOO_MUCH_MG = 18.0      # 单发增重超过这个 → 算"加多了"：退一档
-# 起搅拌后先空转多久再开猝发（**关键**，2026-10-23 11:23 那炉的真正死因之一）：
+# 起搅拌后先空转多久再开猝发（**关键**，2026-10-23 11:23 那次加粉的真正死因之一）：
 # Emm42 acc=200 到 100RPM 约需 0.28s 爬升，0.15~0.22s 的猝发几乎整段落在爬升段，
 # 转子还没把腔口那层粉推到位，振动就结束了——所以"0.15s 脉冲永远 +0mg"，
 # 而 0.6s 脉冲能出 5~6mg。预转 0.35s 让整段猝发都发生在额定转速上。
@@ -442,7 +522,7 @@ TRIM_PULSE_WATCH_MARGIN_MG = 3.0
 # 判停后转缓补脉冲把差的补齐，不直接落"偏轻"结果。缺口更大说明工作点选错，
 # 脉冲一颗颗补不现实，如实报偏轻让用户查原因。
 TRIM_RESCUE_MAX_MG = 100.0
-# 判停偏轻后、重启搅拌之前的"静置窗口"（2026-10-23 11:09 教训）：那炉判停 170mg 就立刻
+# 判停偏轻后、重启搅拌之前的"静置窗口"（2026-10-23 11:09 教训）：那次加粉判停 170mg 就立刻
 # 重启搅拌补差，转子上挂的粉被带下来 58mg，收尾 233mg 偏重 33mg。搅拌停着先等 3~6s，
 # 质量常常自己就走进了验收窗口，这种时候根本不该动搅拌。等完还偏轻才重启搅拌补差。
 TRIM_RESCUE_QUIET_MIN_S = 3.0
@@ -450,7 +530,11 @@ TRIM_RESCUE_QUIET_MAX_S = 6.0
 
 
 def _clamp_amp(value: float) -> float:
-    """振幅统一钳位（1–4 Vpp）：任何路径写振幅都必须过这一关。"""
+    """振幅统一钳位（0.01–4 Vpp）：任何路径写振幅都必须过这一关。
+
+    下限 0.01V 是设备物理下限（QLS3600S 驱动 ``min_amplitude_vpp``），
+    不是工艺下限——2026-10-27 用户明确要求删掉原先软件自定的 1.0V。
+    """
     return round(max(AMP_MIN_VPP, min(AMP_MAX_VPP, float(value))), 2)
 
 
@@ -464,13 +548,38 @@ def _amp_band_for(spec: "StagePlan") -> tuple[float, float]:
     振幅只在基准附近 ±0.5V 里小步走，越远越没有实测依据。
 
     **慢加**：同样是 基准 ±0.5V，而且只许"恢复出料"，绝不追速率。
+
+    **粉级覆盖（2026-10-29 用户定）**：档案 ``dispense_flags.slow_amp_span_vpp``
+    给了半宽时，慢加带 = 基准 ± 该值（封堵剂2 = ±1.0V，2.00V → 1.00–3.00V）。
+    这是"该粉不许零速率脉冲"的补偿：不给脉冲，就得给更大的连续振幅调节余量。
+    覆盖只作用于慢加——快加/粗加各自的 0.5V 是追速率的安全边界，不跟着放。
     """
     base = float(spec.amplitude_vpp)
+    span = getattr(spec, "amp_span_vpp", None)
+    if spec.name == "slow" and span is not None:
+        span = abs(float(span))
+        return (round(max(AMP_MIN_VPP, base - span), 2),
+                round(min(AMP_MAX_VPP, base + span), 2))
     if spec.name == "slow":
-        return (round(max(AMP_MIN_VPP, base - AMP_RAMP_BAND_V), 2),
+        # 慢加下界 = 设备绝对下限 0.01V（2026-10-27 11:08 用户："1V 下限删掉"）：
+        # 慢加是唯一"必须往低走"的段，目标 5mg/s 而 2.0V 常跑 15~25mg/s，
+        # 任何软件自定的下界都会变成"压不下去"的天花板。
+        return (round(max(AMP_MIN_VPP, AMP_SLOW_FLOOR_VPP), 2),
                 round(min(AMP_MAX_VPP, base + AMP_SLOW_RAISE_V), 2))
     return (round(max(AMP_MIN_VPP, base - AMP_RAMP_BAND_V), 2),
             round(min(AMP_CTRL_CEIL_VPP, base + AMP_CTRL_RAISE_SPAN_V), 2))
+
+
+def _powder_flags(workspace: Any) -> dict:
+    """取档案里的加粉标记段 ``dispense_flags``（没有/格式不对就给空 dict）。
+
+    目前认两个键（2026-10-29 用户定，只给封堵剂2 用）：
+      · ``zero_rate_pulse``（bool，默认 True）：速率为 0 时允不允许踢脚脉冲救济。
+      · ``slow_amp_span_vpp``（float，默认 None=0.5）：慢加振幅带半宽。
+    """
+    raw = getattr(workspace, "raw", None) if workspace is not None else None
+    flags = (raw or {}).get("dispense_flags")
+    return flags if isinstance(flags, dict) else {}
 
 
 @dataclass
@@ -491,6 +600,15 @@ class StagePlan:
     position_feedback: bool         # 是否允许闭环动推杆（恒 False：速率靠振幅调）
     amplitude_vpp: float = 2.0      # 该段振幅**基准**（页面填/段默认；闭环在 ±0.5V 内调）
     amp_explicit: bool = False      # 振幅是不是页面手填的（手填就不再按上一段继承）
+    # 本段闭环带**半宽**（None = 按段默认 0.5V，慢加也是 0.5V）。
+    # 2026-10-29 用户定：封堵剂2 在档案 ``dispense_flags`` 里把慢加放宽到 ±1.0V
+    # （慢加基准 2.00V → 允许 1.00–3.00V），作为"不许零速率脉冲"的补偿。
+    amp_span_vpp: float | None = None
+    # 该粉**允不允许在加粉速率为 0 时脉冲**（踢一脚那种 0.5s 高幅救济）。
+    # 2026-10-29 用户："其他都可以，只有他（封堵剂2）不行"——别的粉零速率时靠脉冲
+    # 震开料桥，封堵剂2 起振即成团爆发，脉冲只会甩出一大坨，所以改成靠放宽后的
+    # 振幅带（连续振动）把料逼出来。False = 该段完全不踢脚。
+    zero_rate_pulse: bool = True
     settle_wait_s: float | None = None   # 本段切出时等余料落完的上限 s（None=默认，0=不等）
     switch_compensation_mg: float = 0.0  # 切换点已按学到的惯性落料量提前了多少 mg
     control_note: str = ""
@@ -516,6 +634,9 @@ class StagePlan:
             # 本段**真实闭环带**（基准 ±0.5V），不是设备量程 1–4V：
             # 页面拿这个显示"这一段振幅会在哪个区间里动"，和运行时的 cap/floor 完全一致。
             "amplitude_range_vpp": list(_amp_band_for(self)),
+            "amplitude_span_vpp": (None if self.amp_span_vpp is None
+                                   else round(float(self.amp_span_vpp), 2)),
+            "zero_rate_pulse": bool(self.zero_rate_pulse),
             "amp_explicit": bool(self.amp_explicit),
             "settle_wait_s": (None if self.settle_wait_s is None else round(self.settle_wait_s, 2)),
             "switch_compensation_mg": round(float(self.switch_compensation_mg), 1),
@@ -543,6 +664,9 @@ class TrimSpec:
     stir_rpm: float = 0.0
     rod_ff: int = 0
     amplitude_vpp: float = 2.0      # 记账用：缓补期间振幅保持慢加段基准值不动
+    # 这段脉冲是怎么进来的：slow=慢加剩 ≤40mg 正常缓补 / topup=判停偏轻补差。
+    # （熔断不再转脉冲，2026-10-26 18:35 用户："熔断只发生在阶段切换之间"）
+    source: str = "slow"
 
 
 class DispenseRunner:
@@ -550,11 +674,16 @@ class DispenseRunner:
 
     SAMPLE_INTERVAL_S = 0.12      # 观测周期：比页面 0.5s 快，够用到观测器的 0.75s 预测
     MAX_RUN_S = 180.0             # 基准超时；大目标会按计划估算放大（见 _resolve）
+    # 绝对兜底上限（2026-10-28 用户定）：**第一段（快加）走完后就不再用计划估算的
+    # 上限掐**——料斗断流时慢加靠"顶幅→救济冷却"反复磨，用时远超估算（11:00 那次
+    # 1986mg 差 4mg 进带被 291s 掐掉），但只要快加正常走完就说明给料链路没问题，
+    # 剩下的量是有限的，让它自己收。只保留这个 2 小时绝对兜底防"料斗真空转"。
+    MAX_RUN_ABS_S = 7200.0
     OVERSHOOT_ABORT_MG = 30.0     # 兜底超重保护（验收是 ±10，留 20mg 给惯性/抖动）
     MAX_BALANCE_FAILS = 5         # 连续读不到天平 ≈ 0.6s 就停，闭环不能"盲跑"
     SETTLE_TIMEOUT_S = 6.0        # 停振后等尾料沉降
     # 判稳最短时间：5 个样本（0.75s）极差 ≤2mg 就返回太早了——搅拌刚减速、
-    # 转子上挂的粉还在断续掉，秤会先平一下再掉一坨。10-23 那两炉都是"判停 205、
+    # 转子上挂的粉还在断续掉，秤会先平一下再掉一坨。10-23 那两次加粉都是"判停 205、
     # 最终 211"这种尾差，就是 0.75s 判稳放走的。等满 2s 再允许判稳。
     SETTLE_MIN_STABLE_S = 2.0
     ROD_ARRIVE_TIMEOUT_S = 5.0    # 推杆到位等待
@@ -588,8 +717,8 @@ class DispenseRunner:
         self._stage_log: list[dict] = []
         # 线程用到的运行期字段给默认值，避免"准备阶段就中止"时踩到未定义属性
         self._baseline = 0.0
-        # 有没有读过本炉基线：没有基线时页面不显示"净质量"，
-        # 免得把秤上的绝对示数（可能还是上一炉的皮重）当成这一炉的增量。
+        # 有没有读过本次加粉基线：没有基线时页面不显示"净质量"，
+        # 免得把秤上的绝对示数（可能还是上一次加粉的皮重）当成这一次加粉的增量。
         self._has_baseline = False
         self._rod_start = 0
         self._applied_freq = 0
@@ -615,12 +744,11 @@ class DispenseRunner:
         self._last_drop_s: float | None = None        # 上一次落料阶跃时刻
         self._prev_eval_rate: float | None = None     # 上一个生效窗速率（趋势闸用）
         self._k_est: float | None = None              # 振幅→速率增益 mg/s per V（在线学习）
-        self._amp_threshold_est: float | None = None  # 起振门槛：产生落料的最低振幅
         self._stall_wait_s = -99.0                    # 卡粉救济上一次动作时刻
         self._amp_kick: dict | None = None  # 踢一脚进行中：{amp, base, until}
-        self._amp_kick_watch: dict | None = None  # 踢后观察窗：{amp, fired, until}
         self._amp_kick_tries = 0      # 本段已踢了几脚（段入口复位）
         self._amp_kick_last_amp = 0.0 # 上一脚的振幅（判断是否已到顶）
+        self._amp_kick_m0_total = 0.0 # 本段第一脚踢出时刻的质量（判这几脚累计有没有出料）
         self._amp_lock_reason = ""      # 本段为什么锁住不再调（写进日志用）
         self._amp_log_s = -99.0         # 上次振幅日志时刻（防刷屏）
         self._amp_skip_log_s = -99.0    # 上次"暂不调整"日志时刻（防刷屏）
@@ -650,7 +778,7 @@ class DispenseRunner:
         self._samples_csv_path: str | None = None
         self._amp_cmd = 0.0                 # 振幅环当前目标速率 mg/s
         self._amp_detail = ""               # 振幅环最近一拍的判定原因
-        self._kick_count = 0                # 本炉累计踢脚次数
+        self._kick_count = 0                # 本次加粉累计踢脚次数
         self._t0 = 0.0
         self._max_run_s = self.MAX_RUN_S
         self._internal_stop = ""
@@ -677,6 +805,7 @@ class DispenseRunner:
         self._surge_last_s = -99.0
         self._surge_amp_cuts = 0
         self._surge_events: list[dict] = []
+        self._surge_advance = False     # 熔断请求"本段提前结束"（下一拍按切段处理）
 
     # ------------------------------------------------------------------
     # 对外状态
@@ -702,7 +831,7 @@ class DispenseRunner:
         return payload
 
     def net_mass(self, raw: float) -> float | None:
-        """把天平原始计数换算成「本炉净质量」（计数 − 起炉基线）。
+        """把天平原始计数换算成「本次加粉净质量」（计数 − 开始加粉前的基线）。
 
         为什么需要它：闭环主循环只在运行期间每 0.12s 采样，一旦进入收尾（settling）
         或结束（done/aborted），``live.mass_mg`` 就冻在最后一帧（例如 991），
@@ -854,7 +983,7 @@ class DispenseRunner:
         # 只作为"这粉一发大概多少 mg"的参考值打进日志，方便对照。
         self._trim_enter_mg = trim_enter
         self._trim_pulse_mg = trim_pulse_mg
-        self._trim_rescued = False       # 判停失误补差每炉只允许一次
+        self._trim_rescued = False       # 判停失误补差每次加粉只允许一次
         self._trim_stir_rpm = 0.0        # 缓补脉冲期间临时用的搅拌转速（入口从慢加转速记下）
         # 缓补上一发的实测增重（mg）。用户 16:05 要求"同一幅度第二次脉冲要根据上次的
         # 增重来判断"——这个数现在只用来判"这档振幅是不是太凶"（放量/剩量不足就降幅），
@@ -869,7 +998,7 @@ class DispenseRunner:
         self._trim_pulse_escalated = False
         # 已验证"出料 ≤18mg"的振幅：退回到这一档就停手，不再来回试探
         self._trim_amp_ok = 0.0
-        # 上一次退档退到的振幅：同一炉里再想退到 ≤ 这一档就直接认定工作点
+        # 上一次退档退到的振幅：同一次加粉里再想退到 ≤ 这一档就直接认定工作点
         # （那档已知一粒不出），避免 3.5↔2.5 这种来回空振。
         self._trim_backoff_target = 0.0
         # 沉降门参数落到实例上：主循环只在同一个线程里读，不需要再加锁
@@ -888,6 +1017,9 @@ class DispenseRunner:
         self._surge_last_s = -99.0
         self._surge_amp_cuts = 0
         self._surge_events = []
+        # 熔断判"这一段撑不住、提前切段"的请求位：由 `_surge_brake` 置位，
+        # 主循环顶部当成第三个切段触发消费掉（2026-10-26 18:35 用户口径）。
+        self._surge_advance = False
         self._thread = threading.Thread(
             target=self._thread_main,
             args=(plan, target, r["cls"], tail, ff_fit),
@@ -924,7 +1056,9 @@ class DispenseRunner:
                           f"{STAGE_TEXT[s.name]} {max(SURGE_ABS_MIN_MG_S, surge_ratio * s.rate_mg_s):.0f}"
                           for s in plan if s.name != "slow") + " mg/s）"
                       f"或 剩余 ≤ 速率×{SURGE_STOP_HORIZON_S:g}s 就停振等余料，"
-                      f"最多 {SURGE_SETTLE_MAX_S:g}s；每次熔断顺带降 {SURGE_AMP_CUT_V:g}V，"
+                      f"最多 {SURGE_SETTLE_MAX_S:g}s；停振期间又落 ≥{SURGE_ADVANCE_MG:g}mg "
+                      f"就判定本段撑不住、提前切下一段（不转缓补）；"
+                      f"每次熔断顺带降 {SURGE_AMP_CUT_V:g}V，"
                       f"单次加粉最多 {SURGE_MAX_TIMES} 次）")
         else:
             self._log("段内超速熔断：关（塌料时只能等超重保护）")
@@ -940,7 +1074,7 @@ class DispenseRunner:
                 self._log(f"{STAGE_TEXT[spec.name]}切换点按学到的惯性落料提前 "
                           f"{spec.switch_compensation_mg:g} mg（用该粉历史数据）")
         # 慢加段是不是被切点"甩了包袱"：收尾段正常只该占目标 5~15%。
-        # 2026-10-23 15:46 那炉：目标改成 3000，但页面提交的还是 2000 那套切点
+        # 2026-10-23 15:46 那次加粉：目标改成 3000，但页面提交的还是 2000 那套切点
         # （快加 1450 / 粗加 1812），1812mg 就进慢加，剩 1186mg 全用 5mg/s 磨，
         # 既慢又容易在慢加里撞超时。这里显式报出来，别让人对着一屏日志猜。
         _sw = [float(s.switch_mass_mg) for s in plan
@@ -986,6 +1120,12 @@ class DispenseRunner:
             "max_run_s": round(r["max_run_s"], 1),
             "limits": {"target_min_mg": TARGET_MIN_MG, "target_max_mg": TARGET_MAX_MG},
             "calibration_points": r["points"],
+            # 三阶段配方（档案 stage_recipe_v1）：操作者在页面上定下的三段工作点。
+            # 纯透传给页面「按标定表重算」时回填三行振幅（用户 2026-10-27 13:20 定：
+            # 只是把档案里的值填进表格，填完仍可手改，改了以页面那一行为准）。
+            # 后端算计划依旧只认页面提交的 stages，这里**不参与任何控制**。
+            "stage_recipe": ((r["workspace"].raw.get("stage_recipe_v1") or None)
+                             if r["workspace"] is not None else None),
             # 沉降门参数原样回显，页面用它确认"这次按什么口径切段"
             "settle_gate": {
                 "enabled": True if settle_gate is None else bool(settle_gate),
@@ -1038,7 +1178,8 @@ class DispenseRunner:
             who = workspace.name if workspace else "未选粉"
             how = "按该粉标定振动参数" if signal_source == "powder" else "无标定信号，按默认"
             self._log(f"{how}下发：{who} → {freq_hz:g}Hz / {duty_pct:g}%")
-        # 振幅是本次唯一的速率调节量，只在 1–4 Vpp 内工作（2026-10-21 用户定）。
+        # 振幅是本次唯一的速率调节量；2026-10-27 起允许 0.01–4 Vpp
+        # （下限从软件自定的 1.0V 改为设备物理下限 0.01V，用户 11:08 要求）。
         # 页面手填越界直接拒；标定表里的值超范围就钳进来并留一条日志（老标定不一定在这个区间）。
         raw_amp = (float(signal["amplitude_vpp"])
                    if signal and signal.get("amplitude_vpp") is not None else None)
@@ -1170,7 +1311,9 @@ class DispenseRunner:
             end = float(spec.switch_mass_mg) if spec.switch_mass_mg is not None else float(target)
             estimated += max(0.0, end - prev) / max(0.3, spec.rate_mg_s)
             prev = end
-        # 超时上限跟着计划走：大目标用 180s 会一刀砍在半路；20000mg 慢速工况要 20 分钟以上
+        # 超时上限跟着计划走：大目标用 180s 会一刀砍在半路；20000mg 慢速工况要 20 分钟以上。
+        # 注意这只是**第一段（快加）期间生效的计划上限**——快加走完后 _loop 会把它
+        # 放宽到 MAX_RUN_ABS_S 绝对兜底（2026-10-28 用户定，见常量注释）。
         max_run_s = min(7200.0, max(self.MAX_RUN_S, estimated * 2.2 + 60.0))
 
         points = []
@@ -1383,6 +1526,20 @@ class DispenseRunner:
         bounds = self.stage_boundaries(target)
         ov = {item["name"]: item for item in (overrides or [])}
 
+        # 粉级加粉标记（档案 dispense_flags）：只影响慢加的振幅带半宽和"零速率脉冲"许可。
+        # 2026-10-29 用户定：封堵剂2 = zero_rate_pulse:false + slow_amp_span_vpp:1.0
+        # （不许在速率为 0 时踢脚脉冲；作为补偿，慢加振幅带从 ±0.5V 放宽到 ±1.0V）。
+        flags = _powder_flags(workspace)
+        zero_rate_pulse = flags.get("zero_rate_pulse")
+        zero_rate_pulse = True if zero_rate_pulse is None else bool(zero_rate_pulse)
+        try:
+            slow_span = (float(flags["slow_amp_span_vpp"])
+                         if flags.get("slow_amp_span_vpp") is not None else None)
+        except (TypeError, ValueError):
+            slow_span = None
+        if slow_span is not None and not 0.0 < slow_span <= AMP_MAX_VPP:
+            slow_span = None
+
         # 每段是否启用：默认由边界决定（边界 None = 这个目标尺寸不需要这段）；
         # 慢加是收尾段，不允许关掉（关掉就没人负责最后那一刀）。
         enabled = {name: (bounds.get(name) is not None or name == "slow") for name in STAGE_ORDER}
@@ -1454,7 +1611,7 @@ class DispenseRunner:
             amp_explicit = "amplitude_vpp" in cfg
             amp = _clamp_amp(float(cfg["amplitude_vpp"]) if amp_explicit
                              else STAGE_DEFAULT_AMP_VPP.get(name, amp_vpp))
-            # 切段等待：留空 = 用全局上限（重粉 1.2s），显式 0 = 这一段切出时不停振等
+            # 切段等待：留空 = 用全局硬上限（SETTLE_GATE_MAX_S），显式 0 = 这一段切出时不停振等
             settle_wait = cfg.get("settle_wait_s")
             plan.append(StagePlan(
                 name=name, mode=mode, rate_mg_s=rate, stir_rpm=stir, switch_mass_mg=switch,
@@ -1463,6 +1620,8 @@ class DispenseRunner:
                 # 推杆整段锁死：速率只由振幅调（用户 2026-10-21 要求，别乱动推杆）
                 position_feedback=False,
                 amplitude_vpp=amp, amp_explicit=amp_explicit,
+                amp_span_vpp=(slow_span if name == "slow" else None),
+                zero_rate_pulse=zero_rate_pulse,
                 settle_wait_s=None if settle_wait is None else float(settle_wait),
                 control_note=STAGE_NOTE[name],
                 rod_ff_expected_rate=predicted, rod_ff_achievable=achievable,
@@ -1627,8 +1786,8 @@ class DispenseRunner:
 
         self._set_state("preparing", "设置振动参数（频率/占空比/振幅）")
         first = plan[0]
-        # 先退猝发待命（WO0s+Wc0s）：上一炉缓补若用过真脉冲，设备还停在
-        # "手动触发模式"——输出通道开着但只认 WP1s 触发，不退出来的话这一炉
+        # 先退猝发待命（WO0s+Wc0s）：上一次加粉缓补若用过真脉冲，设备还停在
+        # "手动触发模式"——输出通道开着但只认 WP1s 触发，不退出来的话这一次加粉
         # 设了方波也不会连续震动（2026-10-22 18:23 用户指出的坑）。
         try:
             self.hub.sig.burst_off()
@@ -1652,9 +1811,9 @@ class DispenseRunner:
         self._amp_band = _amp_band_for(first)
         self._amp_lock_reason = ""
         self._amp_kick = None
-        self._amp_kick_watch = None
         self._amp_kick_tries = 0
         self._amp_kick_last_amp = 0.0
+        self._amp_kick_m0_total = 0.0
         self._mass_hist = []
         # 第一段的振幅统计（后面切段由 _enter_stage 重置）
         self._amp_changes = 0
@@ -1664,6 +1823,27 @@ class DispenseRunner:
         self._amp_heartbeat_s = 0.0
         self._stage_start_s = 0.0
         self._stage_start_mass = 0.0
+        # ★ 2026-10-27 13:35 修 bug：**所有"以本次加粉 elapsed 为锚"的时间戳必须在开始加粉时复位**。
+        # 事故（13:29 那次加粉，失水剂2 2000mg）：快加爬到 2.50V 带顶后零落料，
+        # 本该在带顶满 4s、近 4s 速率 <1mg/s 时踢一脚，结果每拍都只写
+        # "救济冷却中（等 τ+T = 12s）"，直到操作员 70s 手动停，一脚都没踢出去。
+        # 根因：`_stall_wait_s` 只在 __init__ 和 `_enter_stage` 里复位，**第一段不经过
+        # `_enter_stage`**（走 `_prepare`），于是它带着上一次加粉的踢脚时刻（13:24 那次加粉
+        # 最后一脚在 189s）进了新的一次加粉；新的一次加粉 elapsed 才 41s → `elapsed - _stall_wait_s`
+        # 是个负数，永远 < τ+T → 冷却判定恒成立，救济被永久锁死。
+        # `_amp_at_cap_since` 同理（陈旧值会让"带顶满 4s"这条也永远不成立）。
+        self._stall_wait_s = -99.0       # 卡粉救济上一次动作时刻（-99 = 本次加粉没踢过）
+        self._amp_at_cap_since = None    # 本轮"到带顶"的起始时刻
+        self._kick_count = 0             # 本次加粉累计踢脚次数（原来跨次加粉累加，CSV 会串账）
+        self._stall_abort_s = 0.0        # 断料兜底参考时刻
+        self._stall_abort_ref = 0.0      # 断料兜底参考质量
+        self._last_drop_s = None         # 上一次天平读数变化的时刻
+        self._ramp_last_s = -99.0
+        self._prev_eval_rate = None
+        self._v7_prev_rate = None
+        self._v7_prev_t = None
+        self._v7_a_est = None
+        self._amp_write_marks = []       # 写幅时刻队列（τ 在线估计用）
 
         if first.stir_rpm > 0.5:
             self._set_state("preparing", f"搅拌起转到 {first.stir_rpm:.0f} RPM（防搭桥）")
@@ -1683,7 +1863,9 @@ class DispenseRunner:
                      else f"速率闭环调幅（基准 −{AMP_RAMP_BAND_V:g}V ~ "
                           f"+{AMP_CTRL_RAISE_SPAN_V:g}V，单步 "
                           f"{AMP_CTRL_STEP_MIN_V:g}–{AMP_CTRL_UP_MAX_V:g}V；"
-                          f"步子按缺口÷增益算，顶到带顶仍不出就踢一脚）"))
+                          f"步子按缺口÷增益算，"
+                          + ("顶到带顶仍不出就踢一脚）" if first.zero_rate_pulse
+                             else "该粉不许零速率脉冲，顶到带顶不踢脚）")))
 
         if self._stop_event.is_set():
             raise _Abort(self._internal_stop)
@@ -1694,8 +1876,9 @@ class DispenseRunner:
                         f"{first.duty_seed_permyriad / 100:.1f}% 占空比 / "
                         f"振幅 {self._applied_amp:.2f}Vpp，"
                         f"搅拌 {first.stir_rpm:.0f} RPM")
-        self.hub.sig_output(True)
-        self._vib_running = True
+        self._open_vibration(f"起振：{STAGE_TEXT[first.name]}，"
+                             f"振幅 {self._applied_amp:.2f}Vpp / "
+                             f"搅拌 {first.stir_rpm:.0f} RPM")
         return {"stage_index": 0}
 
     def _loop(self, plan: list[StagePlan], states: dict, target: int,
@@ -1719,10 +1902,20 @@ class DispenseRunner:
         fails = 0
         last_log = 0.0
         last_curve = 0.0
+        cap_released = False   # 快加走完后解除计划估算上限（只留绝对兜底）
         while not self._stop_event.is_set():
             elapsed = time.monotonic() - self._t0
             if elapsed > self._max_run_s:
-                raise _Abort(f"超时保护：已运行 {elapsed:.0f}s（上限 {self._max_run_s:.0f}s）")
+                if stage_index >= 1 and not cap_released:
+                    # 第一段（快加）已经走完：计划估算的时长不再可信（断流磨蹭很正常），
+                    # 解除计划上限，只保留 MAX_RUN_ABS_S 绝对兜底防料斗真空转。
+                    cap_released = True
+                    planned = self._max_run_s
+                    self._max_run_s = self.MAX_RUN_ABS_S
+                    self._log(f"快加已完成，计划估算超时上限 {planned:.0f}s 解除"
+                              f"（放宽到绝对兜底 {self._max_run_s:.0f}s）")
+                if elapsed > self._max_run_s:
+                    raise _Abort(f"超时保护：已运行 {elapsed:.0f}s（上限 {self._max_run_s:.0f}s）")
             try:
                 raw = self._read_balance_raw()
                 fails = 0
@@ -1737,6 +1930,20 @@ class DispenseRunner:
             self._last_raw = int(raw)
 
             # ── 阶段切换：达标就换配方（换搅拌 / 换前馈开度 / 换控制器参数）──
+            # 三个触发同级：质量到切点 / 预测切点 / **熔断判"这一段撑不住"**。
+            # 熔断只负责叫停本段（停振、记事件），切段本身走下面同一套
+            # 关段账 → 沉降门 → 进段配方（2026-10-26 18:35 用户："熔断只发生在阶段
+            # 切换之间就行了"），所以剩余量永远由下一段接着加，不会跳进缓补。
+            force_cut = bool(getattr(self, "_surge_advance", False))
+            if force_cut and (stage_index >= len(plan) - 1 or spec.switch_mass_mg is None):
+                self._surge_advance = False      # 已经在最后一段，没有下一段可切
+                force_cut = False
+                # 熔断那边把振动关了，这里必须重新起振——否则最后一段一粒粉都不出，
+                # 30s 后会被"断料中止"顶掉（那是自己给自己造事故）。
+                if not self._vib_running:
+                    self._open_vibration(
+                        f"熔断后已是最后一段（{STAGE_TEXT[spec.name]}），没有下一段可切"
+                        f"——重新起振接着加（剩 {target - mass:.0f}mg）")
             # **预测切段**（2026-10-26 11:05 用户）：质量还没到切点，但"质量 + 速率×1s"
             # 已经到了，就现在停振——让余料正好落在切点上，而不是越过切点再补一刀。
             cut = {"cut": False, "rate_mg_s": 0.0, "lead_mg": 0.0, "switch_mg": None}
@@ -1746,7 +1953,12 @@ class DispenseRunner:
                 cut = self._predictive_cut(spec, mass)
             if (stage_index < len(plan) - 1
                     and spec.switch_mass_mg is not None
-                    and (mass >= spec.switch_mass_mg or cut["cut"])):
+                    and (mass >= spec.switch_mass_mg or cut["cut"] or force_cut)):
+                if force_cut:
+                    self._surge_advance = False
+                    self._log(f"熔断后提前切段：{STAGE_TEXT[spec.name]} 到 {mass:.1f}mg 就收工"
+                              f"（剩 {target - mass:.0f}mg 不再用本段速率硬加），交给"
+                              f"{STAGE_TEXT[plan[stage_index + 1].name]}接着加")
                 if cut["cut"]:
                     self._log(f"预测切段：{STAGE_TEXT[spec.name]} {mass:.1f}mg + 尾量预测 "
                               f"{cut['lead_mg']:g}mg（速率 {cut['rate_mg_s']:.1f}mg/s ×"
@@ -1813,10 +2025,13 @@ class DispenseRunner:
                 if surge["finish"]:
                     self._close_stage_log(mass, elapsed)
                     return surge["reason"]
-                if surge["to_pulse"]:
-                    # 塌料 -→ 剩下的量改用脉冲一发一称递补（缓补那套振幅学习直接复用）
-                    self._close_stage_log(mass, elapsed)
-                    return self._trim_pulse_loop(mass, elapsed, target)
+                if surge["advance"]:
+                    # 塌得太猛：本段到此为止。振动已经关了，下一拍主循环顶部的切段
+                    # 流程会接管（沉降门 + 进下一段），不再往缓补跳。
+                    self._surge_advance = True
+                    # 立刻进入下一拍去切段：这一拍剩下的控制器/调幅/判停全都基于
+                    # "振动已经停了"的旧数据，跑了只会用旧段的振幅再算一遍。
+                    continue
 
             motion = estimator.update(elapsed, mass)
             observation = FeedbackObservation(
@@ -1882,7 +2097,7 @@ class DispenseRunner:
                 return decision.reason or "控制器判定停止"
             time.sleep(self.SAMPLE_INTERVAL_S)
         self._close_stage_log(self._live.get("mass_mg", 0.0), time.monotonic() - self._t0)
-        # 停止请求走"中止"路径：这一炉没有跑到控制器判定，结果必须标成未成功
+        # 停止请求走"中止"路径：这一次加粉没有跑到控制器判定，结果必须标成未成功
         raise _Abort(getattr(self, "_internal_stop", "操作员停止"))
 
     # ------------------------------------------------------------------
@@ -1890,59 +2105,102 @@ class DispenseRunner:
     # ------------------------------------------------------------------
 
     def _enter_stage(self, spec: StagePlan, mass: float, elapsed: float) -> None:
-        """进入新阶段：先换搅拌，再调振幅、写占空比，最后把推杆开到该段开度。
+        """进入新阶段：**先关闸** → 换搅拌 → 调振幅 → 写占空比 → 开推杆 → **最后开闸**。
 
-        顺序刻意如此：搅拌决定"料松不松"，振幅决定"振动多强"，推杆决定"口开多大"。
-        先把料搅松、振动调到该段的强度，再张口，流量上升是平滑的台阶；
-        反过来的话，张口瞬间可能先掉一团结块。
+        顺序刻意如此。前半句是物理：搅拌决定"料松不松"，振幅决定"振动多强"，
+        推杆决定"口开多大"——先把料搅松、振动调到该段的强度，再张口，流量上升是
+        平滑的台阶；反过来张口瞬间可能先掉一团结块。
+        后半句是时序（2026-10-29 16:14 用户指出"切换粗加的时候，是先振动，再更改
+        幅度"）：沉降门不一定会停振（速率低于门槛、或上一段太短测不出速率都会直接
+        跳过），所以进段第一件事是确认输出已关，参数全部写完再开——**绝不允许
+        "边出料边改幅度"**，那等于拿上一段的振幅先甩一坨料。
         """
         self._log(f"进入{STAGE_TEXT[spec.name]}：{mass:.1f} mg / 目标 "
                   f"{self._config['target_mg']} mg，目标流量 {spec.rate_mg_s:.1f} mg/s，"
                   f"搅拌 {spec.stir_rpm:.0f} RPM，振幅 {spec.amplitude_vpp:.2f} Vpp，"
                   f"前馈开度 {spec.rod_ff}"
                   f"（预期 {spec.rod_ff_expected_rate if spec.rod_ff_expected_rate is not None else '—'} mg/s）")
+        # ★ 2026-10-29 16:40（用户："还是不对啊……切到粗加时会先按 2.7V 振动，然后
+        # 才变 2V"）：段间必须**先关闸、再改配方、最后开闸**，而且关闸**无条件**执行。
+        # 沉降门不是每次都会停振：`_settle_gate` 开头有一道速率门槛
+        # （`abs(rate_now) < 本段规定速率×1.5` → 直接 return），而且上一段太短时
+        # `_measure_rate(3.0, 4.0)` 根本凑不出样本，rate_now 记 0 → 同样被拒。
+        # 那两种情况下振动一直是开着的，于是:
+        #   · `_set_amplitude` 变成"边出料边改幅度"，改幅那一瞬间仍按**旧振幅**在落料；
+        #   · 新段的搅拌/占空/推杆直接压在上段没断的料流上，等于没有段界。
+        # 16:12:59 那次就是活例：粗加只跑 1.8s 到切点（没走沉降门），慢加进段时
+        # 日志里既没有"切段沉降"、也没有"振动输出重新打开"——料一直在流。
+        # 这里只关**不等**：关→写搅拌/振幅/占空/推杆，串口往返几十毫秒；
+        # 等料落定是沉降门的职责，不在进段这里抢（那会把几十 ms 拖成几秒）。
+        #
+        # 关闸不看 `_vib_running` 这一个标志位：标志位只反映"软件以为的状态"，
+        # 上一次 stop 抛异常会被吞掉、页面手动开输出也不改它。只信标志位就等于
+        # 允许"标志位说关了、设备其实还在振"——那正是用户看到的现象。
+        # `Wc0s` 本身幂等，多关一次零代价。
+        was_on = self._vib_running
+        t_close = time.monotonic()
+        self._safe_stop_vibration()
+        if self._vib_running:                 # 关闸真的失败了（串口/设备无应答）
+            self._log(f"⚠ 换段关振动失败：{STAGE_TEXT[spec.name]}配方会写在一个仍在"
+                      f"振动的料道上（振幅写入后开闸会再复核一次）")
+        else:
+            self._log(f"① 关闸完成：振动输出已断开"
+                      f"（{'上一段沉降门没停振，这里补关' if was_on else '沉降门已关，这里复核一次'}）"
+                      f"，接下来改写振幅，最后才开闸 [+{1000 * (time.monotonic() - t_close):.0f}ms]")
         if abs(spec.stir_rpm - self._applied_stir) > 15:
             self._set_stir(spec.stir_rpm, wait=False)
-        # 振幅：**进段取本段基准（页面手填 / 段默认 3.0-2.5-2.0）**；但若上一段实测到
-        # "起振门槛"高于基准（粉位低/粉种特性，12:38 实测 2V 一粒不出、3V 才出），
-        # 就从门槛附近起步，免得每段开头都空转一整个响应窗才发现不出料。
+        # 振幅：**进段一律从本段基准起步，基准就是页面填的那个值**。
+        # 2026-10-27 11:28 用户定死口径："起振的门槛就是由我来定的，就是我会输入的那个值"。
+        # 所以：
+        #   · "起振门槛"这个概念已经整个删掉（2026-10-27 11:44）。它当年记的是
+        #     "刚才多少伏落得下粉"，而那常常是断料后一脚踢出来的瞬时值（11:19 那次加粉
+        #     快加 1139mg 卡桥、3.5V 踢开 → 记成 3.1V），拿它当下一段起点等于让一次
+        #     事故决定后面所有段的工作点（粗加基准 1.5V 被顶到 3.1V → 89.8mg/s →
+        #     超重 2036mg）；踢完还会把工作振幅上移到"踢脚−0.2V"，于是越踢越高。
+        #   · 慢加本来就更严格（设 2V 就跑 2V，不出料靠踢脚救）。
+        # 门槛值只由页面「振幅 Vpp」那一行决定：想让它更容易起振，就把它填高。
         base_amp = float(spec.amplitude_vpp)
-        if spec.name == "slow":
-            # 慢加起步**一律用本段基准**（用户 17:29：设 2V 就跑 2V；现默认 2.0V）。
-            # 旧版"门槛−0.5V 起步"（14:44 加的）在润滑剂1 上把慢加顶到 3.0V、
-            # 实测 28mg/s，2.7s 冲完慢加段直接超差 +45mg——起振门槛记忆
-            # 从此不用于慢加起步；2V 起不出料就靠踢一脚（0.5s 脉冲）救。
-            new_amp = _clamp_amp(base_amp)
-        elif (self._amp_threshold_est is not None
-                and self._amp_threshold_est > base_amp + AMP_BAND_V):
-            # 快加/粗加要流量：门槛高于基准+0.2V 就从门槛起步，免得每段开头
-            # 空转一整个响应窗才发现不出料。
-            new_amp = _clamp_amp(max(base_amp, float(self._amp_threshold_est)))
-            self._log(f"起振门槛记忆：本次加粉实测 {self._amp_threshold_est:.2f}V 才落得下粉"
-                      f"（本段基准 {base_amp:.2f}V 低于当前门槛），{STAGE_TEXT[spec.name]}"
-                      f"从 {new_amp:.2f}V 起步")
-        else:
-            new_amp = _clamp_amp(base_amp)
+        new_amp = _clamp_amp(base_amp)
+        # 兜底：起步振幅必须在带内（基准±0.5V 的两个端点本来就是起步值，这里是防
+        # 以后有人往基准里塞越界值）。
+        band_lo, band_hi = _amp_band_for(spec)
+        if new_amp > band_hi + 0.001:
+            new_amp = band_hi
+        elif new_amp < band_lo - 0.001:
+            new_amp = band_lo
+        new_amp = self._entry_amp_guard(spec, new_amp)
         self._set_amplitude(new_amp, elapsed, f"进入{STAGE_TEXT[spec.name]}")
-        self._mass_hist = []
+        self._log(f"② 振幅就位 {self._applied_amp:.2f}Vpp（振动仍关着；"
+                  f"推杆/占空写完才开闸）[+{1000 * (time.monotonic() - t_close):.0f}ms]")
+        # 质量历史**不能清空**（2026-10-27 11:05 修 bug）：`_measure_rate` 要 6s 窗、
+        # ≥4.8s 跨度才出速率，清空后新段前 4.8s 一律测不出 → 再叠加下面
+        # `_last_drop_s` 被清成 None，就会被判成"整个窗零落料"（zero_flow），
+        # 于是慢加第一次评估必然走"断料涓流 +0.10V"——**方向还是往上升**。
+        # 慢加振幅因此永远只从 2.00 爬到 2.10，一次都没降过（10:33 那次加粉实测）。
+        # 保留最近 40 拍：跨段质量是连续的，窗口里带一点上一段的余料正好代表真实料流。
+        self._mass_hist = self._mass_hist[-40:]
         self._amp_last_eval_s = elapsed
         self._amp_probe = None
         self._amp_band = _amp_band_for(spec)
         self._amp_lock_reason = ""
-        # 段内相位复位；τ/T/门槛/增益是"这种粉"的性质，跨段保留
+        # 段内相位复位；τ/T/增益是"这种粉"的性质，跨段保留
         self._amp_write_marks = []
         self._prev_eval_rate = None
         self._last_mass_for_drop = None
-        self._last_drop_s = None
+        # 落料时刻保留（当作进段瞬间刚落过料）：即便窗口样本还不够，也只会走
+        # "拉长窗口再试"，绝不会误判成断料去抬振幅。
+        self._last_drop_s = elapsed
         self._stall_wait_s = -99.0
         self._amp_kick = None
-        self._amp_kick_watch = None
         self._amp_kick_tries = 0
         self._amp_kick_last_amp = 0.0
+        self._amp_kick_m0_total = 0.0
         self._ramp_below_since = None   # 粗调坡道计时按段重置
         self._ramp_last_s = -99.0
         # v8 速率闭环：响应窗按段从"进段那次写幅"起算
-        self._amp_wait_s = AMP_CTRL_MIN_EVAL_S
+        # 慢加段短（5~15s），等 3s 再评估等于整段只走 1 步 → 慢加用 1.5s（2026-10-27 11:02）
+        self._amp_wait_s = (AMP_SLOW_EVAL_S if spec.name == "slow"
+                            else AMP_CTRL_MIN_EVAL_S)
         self._amp_last_dir = None
         # v7 自适应状态按段重置
         self._v7_prev_rate = None
@@ -1968,20 +2226,70 @@ class DispenseRunner:
             self._applied_window = target_rod
         # 推杆是硬约束：本段开度就从标定点照抄，全程不再动（用户 2026-10-22 明确要求）。
         # 这句日志是"锁死"的凭证，事后复盘能直接对上"这一段推杆有没有被改过"。
-        amp_note = (f"振幅 {self._applied_amp:.2f}V（慢加不追速率；连续振幅最高 "
-                    f"{float(spec.amplitude_vpp) + AMP_SLOW_RAISE_V:.2f}V = 基准"
-                    f"+{AMP_SLOW_RAISE_V:g}V，真卡粉才踢一脚 0.5s 脉冲、踢完回落）"
+        band_lo, band_hi = self._amp_band
+        pulse_note = ("真卡粉才踢一脚 0.5s 脉冲、踢完回落" if spec.zero_rate_pulse
+                      else "该粉不许零速率脉冲（不踢脚），只靠这条振幅带逼料")
+        amp_note = (f"振幅 {self._applied_amp:.2f}V（慢加不追速率；连续振幅 "
+                    f"{band_lo:.2f}–{band_hi:.2f}V = 基准"
+                    f"{float(spec.amplitude_vpp):.2f}V±{band_hi - float(spec.amplitude_vpp):.2f}V，"
+                    f"{pulse_note}）"
                     if spec.name == "slow" else
-                    f"振幅 {self._amp_band[0]:.2f}–{self._amp_band[1]:.2f}V"
+                    f"振幅 {band_lo:.2f}–{band_hi:.2f}V"
                     f"（基准 {float(spec.amplitude_vpp):.2f}V：按速率闭环自动加减，"
                     f"慢了加、快了减，追不上就一直加到上界）")
         self._log(f"推杆锁定 {target_rod}（来自标定点/页面手填，整段不动）；{amp_note}")
-        # 上一次切段沉降门把振动关了的话，进新段必须重新起振——否则整段一点粉都不出，
-        # 振幅环会把振幅一路顶到 4V 还追不上（这是最容易漏的一步）。
+        # 搅拌 / 振幅 / 占空比 / 推杆全部写完之后，**最后一步才开闸**。
+        # 顺序不能反：先开输出再写参数，就等于拿上一段的振幅先甩一坨料
+        # （2026-10-29 16:14 用户指出的就是这个）。这里也是沉降门停振后的重开点——
+        # 不开的话整段一粒粉都不出，振幅环会把振幅一路顶到 4V 还追不上。
         if not self._vib_running:
-            self.hub.sig_output(True)
-            self._vib_running = True
-            self._log(f"振动输出重新打开（{STAGE_TEXT[spec.name]}开始出料）")
+            self._open_vibration(
+                f"{STAGE_TEXT[spec.name]}，配方已全部就位："
+                f"搅拌 {spec.stir_rpm:.0f}RPM / 振幅 {self._applied_amp:.2f}Vpp / "
+                f"占空 {spec.duty_seed_permyriad / 100:.1f}% / 推杆 {target_rod}"
+                f"；关闸→改幅→开闸 {1000 * (time.monotonic() - t_close):.0f}ms")
+
+    def _prev_stage_rate(self) -> float | None:
+        """刚关闭那一段的实测平均速率 mg/s（拿不到就给 None，不做任何压制）。"""
+        with self._lock:
+            if not self._stage_log:
+                return None
+            entry = self._stage_log[-1]
+        rate = entry.get("actual_rate_mg_s")
+        return None if rate is None else float(rate)
+
+    def _entry_amp_guard(self, spec: StagePlan, new_amp: float) -> float:
+        """进粗加时，上一段甩得太快就先按 k_est 把起步振幅压下来。
+
+        为什么只管粗加：快加本来就是要流量（压它反而加不动）；慢加是"只恢复出料、
+        不追速率"，起步必须锁本段基准（用户 17:29 定的规矩，压下去会空振）。
+        粗加夹在中间——它的目标速率比快加低一个量级，却是**接着快加的存量料流**开跑，
+        最容易变成"一开段就 6 倍速"。18:04 那次加粉就是这么超的（详见
+        ``STAGE_ENTRY_RATE_RATIO`` 的注释）。
+
+        压幅只压到**本段振幅带下界**：再低就该空振了，那种情况交给踢脚和振幅环处理，
+        不能为了"看起来安全"把出料压成 0（11:17 那次加粉 2.00V 一粒不出、空转 115s 的教训）。
+        """
+        if spec.name != "coarse":
+            return new_amp
+        prev = self._prev_stage_rate()
+        if prev is None:
+            return new_amp
+        target_rate = max(0.1, float(spec.rate_mg_s))
+        if prev < STAGE_ENTRY_RATE_RATIO * target_rate:
+            return new_amp
+        k = float(self._k_est) if self._k_est else AMP_CTRL_K_DEFAULT
+        k = max(AMP_CTRL_K_MIN, min(AMP_CTRL_K_MAX, k))
+        cut = (prev - target_rate) / k
+        floor = _amp_band_for(spec)[0]
+        want = round(max(floor, new_amp - cut), 2)
+        if want >= new_amp - 0.04:
+            return new_amp
+        self._log(f"进段压幅：{STAGE_TEXT[spec.name]} 起步 {new_amp:.2f} → {want:.2f} Vpp"
+                  f"（上一段实测 {prev:.1f} mg/s = 本段目标 {target_rate:.1f} 的 "
+                  f"{prev / target_rate:.1f} 倍，按 k={k:.0f} mg/s/V 压 {cut:.2f}V，"
+                  f"下限 {floor:.2f}V）——别让上一段的料流惯性当本段起点")
+        return want
 
     # ------------------------------------------------------------------
     # 切段沉降门（重粉关键：切段那一刻料还没落完）
@@ -2036,8 +2344,14 @@ class DispenseRunner:
         下一段——粗加一开场就超过自己的切换点，慢加要倒着补，最终必然偏重。
 
         动作顺序：**只关振动**，搅拌保持（防搭桥、帮余料走完），推杆不动（不许为了
-        "等"去挪机构）。判稳条件：连续 5 个样本窗口极差 ≤2mg 且斜率 ≤0.5 mg/s；
-        超时（默认 1.2s，重粉够用）就用当前质量直接切——绝不在这里卡住。
+        "等"去挪机构）。判稳条件：**连续 hold_s 秒没有 ≥2mg 的增重**（hold_s 取自学到的
+        落料周期 T_est，钳 2–5s）。硬上限 SETTLE_GATE_MAX_S（8s）只防"永远等下去"；
+        到点仍未稳就照切，但日志会明确告警"下一段是踩着余料起振的"。
+
+        （2026-10-27 11:35 用户："切换阶段等待粉末沉降时，沉降未结束，天平质量还在变化就
+        进行了下一阶段的振动导致粉末质量不可控"。旧版上限 1.2s + "0.5s 窗极差≤2mg"判稳，
+        脉冲式落料两坨之间本来就静，于是每段都 1.2s 到点、stable=False 硬切——
+        实测余料 +52/+82/+93/+95/+127mg 全落进了下一段。）
 
         ``force=True`` 来自 ``_predictive_cut``：已经决定提前停振了，速率门槛不再拦
         （否则"提前停振"会被"速率不够高"否掉，等于没做）。
@@ -2049,10 +2363,16 @@ class DispenseRunner:
                "gain_mg": 0.0, "waited_s": 0.0, "stable": False, "rate_mg_s": 0.0}
         if not self._gate_enabled:
             return out
-        wait_limit = (prev.settle_wait_s if prev.settle_wait_s is not None
+        # 判稳需要的静默时间 = 一个落料周期（学到的 T_est），钳在 2.0–5.0s。
+        # 页面「沉降等 s」是这一段的等待上限；但它短于判稳所需时会被抬到 hold+1s，
+        # 否则就是"门永远来不及判稳"——这正是 1.2s 那版的 bug。
+        hold_s = max(SETTLE_GATE_HOLD_MIN_S,
+                     min(SETTLE_GATE_HOLD_MAX_S, float(self._period_est)))
+        wait_limit = (float(prev.settle_wait_s) if prev.settle_wait_s is not None
                       else SETTLE_GATE_MAX_S)
         if wait_limit <= 0:
-            return out
+            return out                      # 页面填 0 = 这一段显式不等（老行为）
+        wait_limit = max(wait_limit, hold_s + 1.0)
         # 触发判定：用上一段最近这几秒的回归速率（和振幅环同一套算法）。
         # 以前读 _rate_hist，那是"瞬时速率平均值"的旧字段，振幅环改用质量回归后
         # 已经没人往里写 —— 不改这里沉降门会永远判 0 速率、一次都不触发。
@@ -2070,11 +2390,18 @@ class DispenseRunner:
                         f"切段沉降：{STAGE_TEXT[prev.name]}→{STAGE_TEXT[nxt.name]}，"
                         f"停振等余料落完（≤{wait_limit:g}s）")
         self._log(f"切段沉降：{STAGE_TEXT[prev.name]}→{STAGE_TEXT[nxt.name]}，"
-                  f"{why}，停振等余料落完（最多 {wait_limit:g}s），搅拌/推杆保持不动")
+                  f"{why}，停振等余料落完（最多 {wait_limit:g}s），搅拌暂时保持不动")
         self._safe_stop_vibration()
+        # ★ 2026-10-29 17:10 **撤销**"停振时预置下一段振幅"（16:50 加的，只活了 20 分钟）。
+        # 用户现场判定："没震动，那是搅拌出的粉末"。翻 17:00:19 那次 10000mg 的逐拍：
+        # 快加段 ≥2.75V 时平均 80mg/s（振动是有效的），**切段之后粗加整段只有 2–9mg/s，
+        # 振幅加到带上界 2.49V 仍不出料**。切段这一刻唯一新增的动作就是"输出关着的时候
+        # 写 WC"，所以撤掉它。以后只在两个点写振幅：进段（输出关着写一次）、
+        # 开闸后复核一次——不再在沉降等待期间反复写。
         t0 = time.monotonic()
         hist: list[tuple[float, float]] = []
         stable = False
+        stir_off = False          # 漏料型粉：等不到判稳就把搅拌也停掉（见常量注释）
         last_tick = 0.0
         last_curve = 0.0
         while True:
@@ -2108,27 +2435,67 @@ class DispenseRunner:
                         self._curve.append([round(elapsed_now, 2), round(cur, 1),
                                             round(rate, 2)])
                 self._set_state("running",
-                                f"沉降等待：{STAGE_TEXT[prev.name]}→{STAGE_TEXT[nxt.name]} "
+                                f"沉降等待（振动已关）：{STAGE_TEXT[prev.name]}→"
+                                f"{STAGE_TEXT[nxt.name]} "
                                 f"{cur:.0f}/{self._config['target_mg']} mg"
-                                f"（余料 {cur - mass:+.0f}mg，≤{wait_limit:g}s 内判稳）")
-            if len(hist) >= SETTLE_GATE_SAMPLES:
-                window = hist[-SETTLE_GATE_SAMPLES:]
-                span = max(0.05, window[-1][0] - window[0][0])
-                slope = abs((window[-1][1] - window[0][1]) / span)
-                spread = max(p[1] for p in window) - min(p[1] for p in window)
-                if spread <= SETTLE_GATE_STABLE_MG and slope <= SETTLE_GATE_RATE_EPS_MG_S:
+                                f"（余料 {cur - mass:+.0f}mg，已等 "
+                                f"{now - t0:.1f}/{wait_limit:g}s，判稳线 {hold_s:.1f}s）")
+            # 漏料型粉：停振 2s 后**还在持续往下走**（近 1.2s ≥3mg/s）→ 问题不在振动，
+            # 是搅拌在推料，把搅拌也停掉再多给 4s（下一段 `_enter_stage` 会重新起转）。
+            # 只看"持续速率"不看窗口净增重：正常粉停振后那几秒的余料是衰减的尾巴，
+            # 不该为它去动搅拌（11:19 那次加粉正常粉在粗加→慢加就被误停过一次）。
+            if (not stir_off and self._applied_stir > 1.0
+                    and now - t0 >= SETTLE_GATE_STIR_OFF_S):
+                recent = [p for p in hist if p[0] >= now - 1.2]
+                if len(recent) >= 2:
+                    span = max(0.05, recent[-1][0] - recent[0][0])
+                    r_recent = (recent[-1][1] - recent[0][1]) / span
+                    if r_recent >= SETTLE_GATE_STIR_OFF_RATE_MG_S:
+                        stir_off = True
+                        wait_limit += SETTLE_GATE_STIR_OFF_EXTRA_S
+                        self._log(f"沉降等待 {now - t0:.1f}s 仍以 {r_recent:.1f}mg/s 往下走"
+                                  f" → 搅拌减速停（{self._applied_stir:.0f}RPM 还在推料，"
+                                  f"光停振停不下来；下一段会按配方重新起转），"
+                                  f"等待上限延到 {wait_limit:g}s")
+                        self._set_stir(0.0, wait=False)
+            # 判稳 = **一个完整落料周期（hold_s）内净增重 ≤ SETTLE_GATE_DROP_MG**。
+            # 用"窗口两端净变化"而不是"单拍增重"：天平有 ±1mg 抖动，单拍阈值会被噪声
+            # 反复触发（真机上表现为永远判不稳）；窗口净变化对噪声免疫，又对"又落了
+            # 一坨"敏感——只要这一整个周期里还多了 2mg 以上，就说明料还在走。
+            if now - t0 >= hold_s:
+                ref = hist[0][1]
+                for ts, ms in reversed(hist):
+                    if ts <= now - hold_s:
+                        ref = ms
+                        break
+                net = cur - ref
+                if net <= SETTLE_GATE_DROP_MG:
                     stable = True
                     break
             time.sleep(0.1)
         waited = time.monotonic() - t0
         landed = hist[-1][1] if hist else mass
+        # "静默"= 末尾这一段净增重 ≤2mg 已经持续了多久（判稳线是 hold_s）
+        quiet_s = 0.0
+        for ts, ms in reversed(hist):
+            if landed - ms <= SETTLE_GATE_DROP_MG:
+                quiet_s = time.monotonic() - ts
+            else:
+                break
         out.update(applied=True, mass=landed, elapsed=time.monotonic() - self._t0,
                    gain_mg=round(landed - mass, 1), waited_s=round(waited, 2),
                    stable=stable, rate_mg_s=round(rate_now, 1),
+                   quiet_s=round(quiet_s, 2),
                    from_stage=prev.name, to_stage=nxt.name)
         self._log(f"沉降结束：余料 {landed - mass:+.1f} mg（{STAGE_TEXT[prev.name]}），"
-                  f"等 {waited:.1f}s（{'已判稳' if stable else '到时未稳，直接切'}），"
-                  f"当前 {landed:.1f} mg")
+                  f"等 {waited:.1f}s（静默 {quiet_s:.1f}s / 判稳线 {hold_s:.1f}s，"
+                  f"{'已判稳' if stable else '到时仍未稳'}），当前 {landed:.1f} mg")
+        if not stable:
+            # 到硬上限还在落：仍然切，但必须让操作员知道下一段是"踩着余料"起振的
+            self._log(f"⚠ 沉降未判稳就切段：{STAGE_TEXT[prev.name]}停振后等满 "
+                      f"{wait_limit:g}s 时质量仍在变化（最近 {quiet_s:.1f}s 内有 ≥"
+                      f"{SETTLE_GATE_DROP_MG:g}mg 增重），{STAGE_TEXT[nxt.name]}会在余料"
+                      f"还没走完时起振——这一段的实际速率会偏高，看紧一点")
         return out
 
     def _note_settle(self, landed: dict) -> None:
@@ -2151,17 +2518,25 @@ class DispenseRunner:
         """超速熔断专用的**短窗**速率：只回答"这 0.7s 到底多快"，不求精度。
 
         为什么不能复用 `_measure_rate(6.0, …)`：那口窗要攒 6s 才出数，而塌料
-        0.5s 就能落 100mg —— 等 6s 出数，粉早就把目标顶穿了（11:30:25 那炉
+        0.5s 就能落 100mg —— 等 6s 出数，粉早就把目标顶穿了（11:30:25 那次加粉
         0→272mg 只用了 2.2s）。这里只要 4 个采样点（≈0.5s）、增重 ≥5mg 就算，
         宁可粗一点，也要在塌料发生的当口就看见。
         """
         with self._lock:
             hist = list(self._mass_hist)
-        if len(hist) < 4:
+        # ★ 2026-10-26 18:04 现场（用户："慢加之后的缓补好像没有等待粉末沉积"）：
+        # 这里原来要求 0.7s 窗内 **≥4 个采样点**，可主循环的实际周期不是标称的
+        # `SAMPLE_INTERVAL_S=0.12s` ——读天平 + 写串口 + 控制器计算合起来约 **0.266s**
+        # （18:03 那次加粉 CSV 逐拍间隔实测中位 0.266、粗加段 0.25–0.34）。0.7s 只装得下
+        # 3 个点，条件永远不成立 → `_surge_rate` 恒返回 None → **超速熔断形同虚设**。
+        # 那次加粉粗加 1455→1831mg 只用 3.0s（125.88 mg/s，目标 20 的 6.3 倍），门槛 50mg/s
+        # 早就该刹车却一次都没触发，最后 0 发脉冲超验收 48mg。
+        # 现在门槛降到 3 个点（跨 ≈0.53s，仍由下面的 span≥0.30 保底，不会拿 2 点判速）。
+        if len(hist) < 3:
             return None
         left = hist[-1][0] - float(window_s)
         pts = [p for p in hist if p[0] >= left]
-        if len(pts) < 4:
+        if len(pts) < 3:
             return None
         span = pts[-1][0] - pts[0][0]
         gain = pts[-1][1] - pts[0][1]
@@ -2177,14 +2552,16 @@ class DispenseRunner:
           ② 剩余量 ≤ 速率 × 1.5s（且速率 ≥12mg/s）：这一瞬间的落料就够把目标顶穿。
 
         为什么这两条能治"没触发脉冲还超重"：缓补的入口是"剩余 ≤40mg"，而塌料
-        是一步从 176 跨到 210（11:30:13 那炉），根本不给缓补开门的机会；慢加的
+        是一步从 176 跨到 210（11:30:13 那次加粉），根本不给缓补开门的机会；慢加的
         振幅环还在等 6s 回归窗，等算出速率时已经晚了。熔断只看瞬时速率，先关振，
-        让惯性余料自己落干净，再重新起振——宁可多等 2s，也不要一炉超重 79mg。
+        让惯性余料自己落干净，再重新起振——宁可多等 2s，也不要一次加粉超重 79mg。
 
-        返回 ``{"applied", "finish", "mass", "elapsed", "reason"}``：
-        ``finish=True`` 表示熔断后已经进了验收带，不必再起振，直接收尾。
+        返回 ``{"applied", "finish", "advance", "mass", "elapsed", "reason"}``：
+        ``finish=True`` 表示熔断后已经进了验收带，不必再起振，直接收尾；
+        ``advance=True`` 表示塌得太猛、本段到此为止，主循环下一拍**直接切下一段**
+        （2026-10-26 18:35 用户："熔断只发生在阶段切换之间就行了"——不再转缓补脉冲）。
         """
-        out = {"applied": False, "finish": False, "to_pulse": False, "mass": mass,
+        out = {"applied": False, "finish": False, "advance": False, "mass": mass,
                "elapsed": elapsed, "reason": ""}
         if not self._surge_on or self._surge_times >= SURGE_MAX_TIMES:
             return out
@@ -2206,7 +2583,7 @@ class DispenseRunner:
                        float(self._surge_ratio) * float(spec.rate_mg_s))
         brake_remain = max(SURGE_STOP_MIN_REMAIN_MG, rate * SURGE_STOP_HORIZON_S)
         # 慢加不走"超速"这条：慢加规定 5mg/s，踢一脚/塌一阵 15~20mg/s 是常态，
-        # 拿它当熔断条件会一路刹车把料刹停（2026-10-26 12:05 那炉 400mg 就死在
+        # 拿它当熔断条件会一路刹车把料刹停（2026-10-26 12:05 那次加粉 400mg 就死在
         # 三次"慢加 17mg/s"上）。慢加只保留"剩余量不够落"这条，那才是真会超重的。
         fast = spec.name != "slow" and rate >= surge_th
         near = (rate >= SURGE_ABS_MIN_MG_S and 0.0 < remain <= brake_remain)
@@ -2291,19 +2668,24 @@ class DispenseRunner:
             # 操作员要停：绝不重新起振（等主循环退出，由收尾统一关输出）
             out["reason"] = "操作员停止"
             return out
-        # 塌得够猛：不再连续加，转"脉冲一发一称"（这条才是"没触发脉冲还超重"的解法）
-        big_gain = (landed - mass) >= SURGE_TO_PULSE_MG
-        big_rate = rate >= SURGE_TO_PULSE_RATE_MG_S
-        if self._trim_on and (big_gain or big_rate):
-            out["to_pulse"] = True
-            out["reason"] = (f"超速熔断后发现料道还在塌（这一下 "
-                             f"{landed - mass:+.0f}mg、峰值 {rate:.0f}mg/s），"
-                             f"不再连续加料，转脉冲一发一称")
+        # 塌得够猛 → **本段到此为止，提前切段**（用户 2026-10-26 18:35："熔断只发生在
+        # 阶段切换之间就行了"）。不再把剩余量塞给缓补脉冲：熔断就是"提前切段"的另一
+        # 种触发方式，跟"质量到切点""预测切点"完全同级——主循环下一拍就走切段流程
+        # （关段账 → 沉降门 → 进下一段配方），粗加/慢加照常各跑各的。
+        big_gain = (landed - mass) >= SURGE_ADVANCE_MG
+        if big_gain:
+            out["advance"] = True
+            out["reason"] = (f"超速熔断后发现料道还在塌（停振期间又落 "
+                             f"{landed - mass:+.0f}mg、触发峰值 {rate:.0f}mg/s），"
+                             f"本段提前结束、直接切下一段"
+                             f"（剩 {target - landed:.0f}mg 交给更低的速率/振幅，不走脉冲）")
             self._log(out["reason"])
+            # 振动保持关闭：下一拍的 `_enter_stage` 会按新段配方重开（它也负责重开振动），
+            # 这里先开着只会用旧段的高振幅再灌一坨。
             return out
         # 继续加：**只有真塌料（速率 ≥2 倍门槛）才压振幅**，而且一次加粉最多压 3 档。
         # 2026-10-26 12:00 的教训：`near`（剩余量不够落）这种"正常偏快"也压振幅，
-        # 结果 400mg/死区 3.2V 那炉被一路压到 1.80V，掉进死区彻底不出料，
+        # 结果 400mg/死区 3.2V 那次加粉被一路压到 1.80V，掉进死区彻底不出料，
         # 最后靠"断料中止"报错——熔断是为了刹车，不是把车拆了。
         if (fast and rate >= 2.0 * surge_th
                 and self._surge_amp_cuts < SURGE_AMP_CUT_MAX):
@@ -2315,10 +2697,8 @@ class DispenseRunner:
         self._amp_wait_s = AMP_CTRL_MIN_EVAL_S
         self._amp_probe = None
         self._prev_eval_rate = None
-        self.hub.sig_output(True)
-        self._vib_running = True
-        self._log(f"超速熔断后重新起振：{self._applied_amp:.2f}V 继续加"
-                  f"（剩 {target - landed:.0f}mg，流速回到正常再让振幅环接管）")
+        self._open_vibration(f"超速熔断后重新起振：{self._applied_amp:.2f}V 继续加"
+                             f"（剩 {target - landed:.0f}mg，流速回到正常再让振幅环接管）")
         return out
 
     def _maybe_taper(self, spec: StagePlan, plan: list[StagePlan], index: int,
@@ -2347,19 +2727,10 @@ class DispenseRunner:
         # 提前降幅的目标就是下一段的**标定振幅**（慢加段就是它锁死的那个值）。
         # 不再按速率比例缩放：缩放值会跑到标定工况之外（上一版把 2.0 缩到 2.66）。
         target_amp = _clamp_amp(nxt.amplitude_vpp)
-        # ★ 但不许降到"已知不出粉"的档位以下（2026-10-26 11:17 事故）：本粉实测过的
-        # 起振门槛 −0.2V 就是地板。门槛还没学到时只能靠 `_taper_watchdog` 兜底。
-        if self._amp_threshold_est is not None:
-            floor_amp = round(float(self._amp_threshold_est) - 0.2, 2)
-            if target_amp < floor_amp:
-                if floor_amp >= self._applied_amp - 0.03:
-                    self._taper_done_index = index
-                    self._log(f"提前降幅取消：下一段振幅 {target_amp:.2f}V 低于实测起振"
-                              f"门槛 {float(self._amp_threshold_est):.2f}V，"
-                              f"降下去必断料（距切点 {dist:.0f}mg），保持 "
-                              f"{self._applied_amp:.2f}V 继续跑")
-                    return
-                target_amp = _clamp_amp(floor_amp)
+        # 旧版这里还有一道"不许降到实测起振门槛−0.2V 以下"的地板（2026-10-26 11:17 事故加的），
+        # **2026-10-27 11:28 已删**：门槛由用户在页面填（用户原话"起振的门槛就是由我来定的，
+        # 就是我会输入的那个值"），学到的门槛若高于下一段基准，会把这个提前降幅整个取消，
+        # 结果切点前料流照样全速冲过去。降下去真断料，`_taper_watchdog` 会撤销并恢复原振幅。
         self._taper_done_index = index
         if target_amp >= self._applied_amp - 0.03:
             return                          # 下一段本来就要更高幅：没必要先降
@@ -2454,7 +2825,7 @@ class DispenseRunner:
         ``skip_before`` 用来切掉"刚改完振幅的响应期"（那会儿流量还是旧振幅的）。
         传 None = 不跳过任何样本（v7 小步调幅就是这么调的：效果靠加速度外推补，
         不必全额等 τ）。**None 必须先归一成 0.0 再参与比较**——2026-10-23 10:10
-        就是这里直接把 None 拿去比大小，`float >= NoneType` 让整炉加粉在起振 2 秒后
+        就是这里直接把 None 拿去比大小，`float >= NoneType` 让整次加粉加粉在起振 2 秒后
         异常中断（hist 攒够 8 个点才走到这行，所以现象是"总是 2 秒后炸"）。
         """
         skip = 0.0 if skip_before is None else float(skip_before)
@@ -2499,7 +2870,7 @@ class DispenseRunner:
                 self._applied_stir = float(rpm)
                 if wait:
                     time.sleep(self.STIR_SETTLE_S)
-        except Exception as error:      # noqa: BLE001 - 搅拌失败不该让整炉直接崩
+        except Exception as error:      # noqa: BLE001 - 搅拌失败不该让整次加粉直接崩
             self._log(f"搅拌切换到 {rpm:.0f} RPM 失败：{error}")
 
     def _amp_heartbeat(self, spec: StagePlan, mass: float, elapsed: float,
@@ -2547,7 +2918,7 @@ class DispenseRunner:
         "加振幅已到极限，料斗可能搭桥/缺料"。
 
         决策顺序（每拍，命中即停）：
-          0. 冻结/踢脚中/踢脚观察窗
+          0. 冻结 / 踢一脚进行中
           1. 踢脚 gate：三段统一——到带顶、停满 4s、这 4s 速率 <1 mg/s 才踢
           2. 响应窗：写幅后等 `_amp_wait_s`（默认 3s），锚在真实写幅时刻
           3. 测速：6s 回归均速；样本不够就拉长一倍；整窗零落料 = 断料 → 按 rate=0 加幅
@@ -2586,69 +2957,46 @@ class DispenseRunner:
             self._stall_wait_s = elapsed     # 冷却从回落这一刻起算（τ+T 后才许下一脚）
             self._amp_probe = None           # 踢脚是脉冲动作，不算微调增益样本
             self._prev_eval_rate = None      # 高幅瞬态会污染趋势闸
-            # 门槛判定**不在踢完瞬间做**（14:30 实机教训）：粉被踢松后要滞后
-            # τ 才落到秤上，踢完立刻看天平必然"没出料"。开观察窗等到 τ+T，
-            # 窗内任何落料都算这一脚生效 → 工作振幅上移（在评估循环里做）。
-            self._amp_kick_watch = {"amp": float(kick["amp"]),
-                                    "fired": float(kick["fired"]),
-                                    "m0": float(kick["m0"]),
-                                    "until": elapsed + self._tau_est
-                                    + self._period_est}
+            # **踢完就回到踢之前的那个工作振幅，之后照旧由速率环管**（2026-10-27 11:44
+            # 用户定："触发完回到原来的幅度即可，不需要记忆这个阶跃触发了门槛学习"）。
+            # 旧版在这里开一个 τ+T 观察窗，只要窗内落了粉就把工作振幅上移到
+            # "踢脚振幅−0.2V"（粗加基准 1.5V 会被抬到 2.8~3.0V），并顺手把踢脚振幅
+            # 记成"起振门槛"——结果是踢过一脚以后振幅再也不回来：一次加粉里调 9 次、
+            # 从 1.27V 一路跑到 3.0V（11:43 那次加粉粗加 11.93mg/s，目标 20）。
+            # 踢脚只是脉冲，不是"这个粉需要多高电压"的证据，所以不学习、不上移。
             self._set_amplitude(
                 float(kick["base"]), elapsed,
                 f"踢一脚完成（{kick['amp']:.2f}V × {AMP_KICK_HOLD_S:.1f}s）→ "
-                f"回落 {kick['base']:.2f}V，开 {self._tau_est + self._period_est:.0f}s "
-                f"观察窗：落料出现就把工作振幅上移到有效踢脚−0.2V")
+                f"回到踢前工作振幅 {kick['base']:.2f}V（不做门槛学习，"
+                f"后续仍由速率环按基准±带调整）")
             return
-        # 观察窗：踢脚后的落料（哪怕滞后 1~2s 才上秤）证明起振门槛 ≤ 踢脚振幅。
-        # 门槛记忆更新 + 工作振幅上移到 有效踢脚−0.2V 连续出料——踢脚只点火。
-        watch = self._amp_kick_watch
-        if watch is not None:
-            productive = (
-                (self._last_drop_s is not None
-                 and self._last_drop_s >= float(watch["fired"]) - 0.2)
-                or float(mass) - float(watch["m0"]) >= 3.0)
-            if productive:
-                cap = round(base + AMP_ESCALATE_V, 2)
-                # 慢加的工作点上移也留 0.5V 余量（涓流），其余段 0.2V
-                margin = 0.5 if spec.name == "slow" else 0.2
-                new_amp = round(min(cap, float(watch["amp"]) - margin), 2)
-                if spec.name == "slow":
-                    # 慢加连续振幅硬上限 = 标定+0.5V（用户 17:29：不超 2.5V）。
-                    # 踢脚哪怕 3.5V 才踢开，连续工作也最多回到 2.5V 涓流。
-                    new_amp = min(new_amp, round(base + AMP_SLOW_RAISE_V, 2))
-                if (self._amp_threshold_est is None
-                        or float(watch["amp"]) > float(self._amp_threshold_est)):
-                    self._amp_threshold_est = float(watch["amp"])
-                self._amp_kick_watch = None
-                self._stall_wait_s = elapsed
-                self._amp_probe = None
-                self._prev_eval_rate = None
-                if new_amp > float(self._applied_amp) + 0.015:
-                    self._set_amplitude(
-                        new_amp, elapsed,
-                        f"踢脚生效（{watch['amp']:.2f}V 踢出了落料）→ 门槛记忆："
-                        f"工作振幅上移到 {new_amp:.2f}V 连续出料")
-                return
-            if elapsed > float(watch["until"]):
-                self._amp_kick_watch = None   # 等满 τ+T 也没落料 → 这脚确实没用
 
         # ── 速率闭环（2026-10-23 11:33 定，11:50 用户改回上限/步长口径）─────────
         # 快加/粗加的上界 = **标定 +0.5V**（同慢加），单步 0.05–0.15V；
         # 慢加保持老规矩（只在断料时往上爬一点点，绝不追速率）。
         slow_stage = spec.name == "slow"
-        if slow_stage:
-            cap_v = round(min(AMP_MAX_VPP, base + AMP_SLOW_RAISE_V), 2)
-            ceil_v = AMP_MAX_VPP
-        else:
-            cap_v = round(min(AMP_CTRL_CEIL_VPP, base + AMP_CTRL_RAISE_SPAN_V), 2)
-            ceil_v = AMP_CTRL_CEIL_VPP
-        floor_v = round(max(AMP_MIN_VPP, base - AMP_RAMP_BAND_V), 2)
-        if self._amp_threshold_est is not None:
-            floor_v = max(floor_v, round(float(self._amp_threshold_est) - 0.2, 2))
+        # 本段真实闭环带：一律从 `_amp_band_for` 取——页面显示的 amplitude_range_vpp
+        # 和这里的 cap/floor 是同一个函数算的，永远不会各说各话（2026-10-29 统一）。
+        # 慢加基准 2.00V 的默认带是 0.01–2.50V；档案 dispense_flags 给了
+        # slow_amp_span_vpp 时（封堵剂2 = 1.0）变成 1.00–3.00V。
+        floor_v, cap_v = _amp_band_for(spec)
+        ceil_v = AMP_MAX_VPP if slow_stage else AMP_CTRL_CEIL_VPP
+        # 下界**只看本段带**，不再被"学到的起振门槛"抬高（2026-10-27 11:28 用户定：
+        # "起振的门槛就是由我来定的，就是我会输入的那个值"）。
+        # 旧逻辑 `floor_v = max(带下界, 门槛−0.2)` 有两条硬伤：
+        #   · 门槛是断料后一脚踢出来的瞬时值（3.5V 踢开 → 记 3.1V），粗加带顶只有
+        #     2.0V，会算出 floor > cap，降幅动作 `max(floor_v, applied−du)` 反而比
+        #     当前更高 —— 想往下收却往上冲；
+        #   · 用户在页面把振幅填低（比如 1.5V），系统却按 3.1−0.2=2.9V 当地板，
+        #     等于把页面输入架空。
+        # 想让它更容易起振就填高页面那一行；降下去真不出料，由带顶停满 4s 的踢脚救。
         at_cap = float(self._applied_amp) >= cap_v - 0.015
         if at_cap:
-            if self._amp_at_cap_since is None:
+            # 陈旧锚点防御（2026-10-27 13:35）：`_amp_at_cap_since` 比本次加粉 elapsed 还大
+            # = 上一次加粉漏复位留下的 → 重新起算，否则"带顶满 4s"这条永远不成立、踢脚也
+            # 就永远不开（和 `_stall_wait_s` 同一类 bug，一起兜住）。
+            if (self._amp_at_cap_since is None
+                    or float(self._amp_at_cap_since) > elapsed):
                 self._amp_at_cap_since = elapsed
         else:
             self._amp_at_cap_since = None
@@ -2663,6 +3011,19 @@ class DispenseRunner:
                 and self._amp_at_cap_since is not None
                 and elapsed - float(self._amp_at_cap_since) >= AMP_KICK_GATE_WINDOW_S
                 and (gate_rate is None or gate_rate < AMP_KICK_GATE_RATE_MG_S)):
+            if not spec.zero_rate_pulse:
+                # 该粉标记"不许在加粉速率为 0 时脉冲"（2026-10-29 用户定，封堵剂2 专用）：
+                # 顶上不踢脚。它起振即成团爆发，0.5s 高幅脉冲甩出来就是几十上百 mg，
+                # 宁可顶着放宽后的振幅带（慢加 1.00–3.00V）继续连续振动把料逼出来；
+                # 真一直不出料就交给 30s 断料中止，绝不用脉冲赌一把。
+                self._amp_heartbeat(
+                    spec, mass, elapsed, cmd,
+                    f"已在振幅上限 {cap_v:.2f}V 停留 "
+                    f"{elapsed - float(self._amp_at_cap_since):.0f}s、近 4s 速率 "
+                    + (f"{gate_rate:.1f}" if gate_rate is not None else "≈0")
+                    + f" < {AMP_KICK_GATE_RATE_MG_S:g} mg/s —— 该粉标记不许零速率脉冲，"
+                    f"不踢脚（振幅带已放宽到 {floor_v:.2f}–{cap_v:.2f}V，再不出料将判断料中止）")
+                return
             self._stall_relief(
                 spec, mass, elapsed, cmd,
                 detail=(f"已在振幅上限 {cap_v:.2f}V 停留 "
@@ -2770,7 +3131,9 @@ class DispenseRunner:
             du_cap = (AMP_CTRL_UP_MAX_V if abs(error) > 0.15 * max(1.0, abs(float(cmd)))
                       else AMP_CTRL_UP_SMALL_V)
         else:
-            du_cap = AMP_CTRL_DOWN_MAX_V
+            # 慢加降幅步子放大到 0.30V（2026-10-27 11:02）：慢加段只有 5~15s，
+            # 0.15V/步根本来不及从 2.0V 收到能压住速率的位置。
+            du_cap = AMP_SLOW_DOWN_MAX_V if slow_stage else AMP_CTRL_DOWN_MAX_V
         du = max(-du_cap, min(du_cap, du))
         if du != 0.0 and abs(du) < AMP_CTRL_STEP_MIN_V:
             du = AMP_CTRL_STEP_MIN_V if du > 0 else -AMP_CTRL_STEP_MIN_V
@@ -2781,13 +3144,19 @@ class DispenseRunner:
             damp_note = "，超调制动减半"
 
         if slow_stage:
-            # 慢加：只许"恢复出料"，绝不追速率（用户铁律，一字不改）
-            if du <= 0 or rate >= AMP_KICK_GATE_RATE_MG_S:
-                self._amp_heartbeat(
-                    spec, mass, elapsed, cmd,
-                    f"{detail}——慢加不追速率（有粉就按实际速率收），振幅不动")
-                return
-            du = min(du, AMP_SLOW_CLIMB_STEP_V)
+            # 慢加：**升幅**只许"恢复出料"，绝不追速率（用户铁律，不动）；
+            # 但**降幅必须敞开**——2026-10-27 11:02 修 bug。
+            # 慢加段存在的全部意义就是把速率压到 5mg/s。实测封堵剂2 在 2.00V 跑
+            # 19~24mg/s（超目标 4 倍），旧条件 `du <= 0` 把"降幅"也一起拦了，
+            # 于是振幅一动不动、带着 4 倍速冲进验收带 → 偏重报废。
+            # 升高会冲速率（所以照旧压住），降低只会断料（踢一脚能救），方向不对称。
+            if du > 0:
+                if rate >= AMP_KICK_GATE_RATE_MG_S:
+                    self._amp_heartbeat(
+                        spec, mass, elapsed, cmd,
+                        f"{detail}——慢加不追速率（有粉就按实际速率收），振幅不动")
+                    return
+                du = min(du, AMP_SLOW_CLIMB_STEP_V)
 
         applied = float(self._applied_amp)
         if du > 0:
@@ -2795,7 +3164,7 @@ class DispenseRunner:
             limit_high = max(cap_v, round(applied, 2))
             target_amp = round(min(limit_high, applied + du), 2)
         else:
-            # 降幅：下限 = max(基准−0.5, 门槛−0.2)——低于起振门槛会又断料
+            # 降幅：下限 = 本段带下界（基准−0.5；慢加 = 设备下限；封堵剂2 慢加 = 基准−1.0）。
             target_amp = round(max(floor_v, applied - abs(du)), 2)
         if abs(target_amp - applied) < 0.015:
             if error > 0 and applied >= cap_v - 0.015:
@@ -2815,7 +3184,7 @@ class DispenseRunner:
             elif error < 0 and applied <= floor_v + 0.015:
                 self._amp_heartbeat(
                     spec, mass, elapsed, cmd,
-                    f"{detail} → 已到振幅下限 {floor_v:.2f}V（基准−{AMP_RAMP_BAND_V:g}V），"
+                    f"{detail} → 已到振幅下限 {floor_v:.2f}V（基准−{base - floor_v:.2f}V），"
                     f"速率仍超目标 {abs(error):.0f}mg/s——起始振幅设高了，本段按现有流量跑")
             else:
                 self._amp_heartbeat(
@@ -2829,6 +3198,11 @@ class DispenseRunner:
         self._amp_last_dir = 1 if step_v > 0 else -1
         # 单步已统一钳在 0.05–0.15V，不再有"大步多等"的分支：一律按最小评估间隔走
         self._amp_wait_s = AMP_CTRL_MIN_EVAL_S
+        if slow_stage:
+            # 慢加段只有 5~15s：按 3s 一评估全程只能走 1~2 步，降幅等于没生效
+            # （2026-10-27 实测：慢加 34 拍全程在"等上一步生效"）。慢加只往低走，
+            # 步子限 0.30V，1.5s 一判足够。
+            self._amp_wait_s = AMP_SLOW_EVAL_S
         if zero_flow:
             self._amp_wait_s = max(float(self._amp_wait_s), AMP_CTRL_ZERO_WAIT_S)
         self._ramp_last_s = elapsed
@@ -2847,19 +3221,33 @@ class DispenseRunner:
         2V，粉体一般就不卡了"。依据是 12:38 真机实测：2Vpp 短脉冲一粒不出、
         3Vpp 0.6s +37mg——一脚正好跨过起振门槛，比 0.5V/步逐级磨快得多；
         高幅只停 0.5s，也不会像连续抬幅那样把速率冲飞。
-        节奏：一脚踢完回落标定值 → 等 τ+T（一个完整生效窗）看落料；还没恢复
-        → 下一脚在此基础上再 +AMP_KICK_ESCALATE_V；硬顶 = 标定+AMP_ESCALATE_V，
+        节奏：一脚踢完**回到踢之前的那个工作振幅** → 等 τ+T（一个完整生效窗）看落料；
+        还没恢复 → 下一脚在此基础上再 +AMP_KICK_ESCALATE_V；硬顶 = 标定+AMP_ESCALATE_V，
         到顶仍不出 → 停手提示查料斗。慢加段同样走这里（只许"恢复出料"，
         不许追速率，速率偏慢的场合在调用方已被拦下）。
 
+        **踢脚只是脉冲，不改变工作点（2026-10-27 11:44 用户定）**："触发完回到原来的
+        幅度即可，不需要记忆这个阶跃触发了门槛学习"。旧版踢完会开 τ+T 观察窗，窗内
+        一落粉就把工作振幅上移到"踢脚−0.2V"并记成门槛，于是越踢越高（11:43 那次加粉粗加
+        从 1.27V 一路跑到 3.0V、调 9 次，实测 11.93mg/s 而目标 20）。
+
         2026-10-22 13:56 实机抓到的两个坑（修复）：
-        ① 锚点不能用 spec 标定值——进慢加时"起振门槛记忆"可能已经把振幅抬到
-           标定之上（2.0→2.5V），按标定算踢脚会**往下踢**（2.50→2.00V），
-           等于亲手把唯一能出料的振幅掐灭；必须锚定 max(标定, 当前实际值)。
+        ① 锚点不能用 spec 标定值——当前工作振幅可能已经被速率环抬到标定之上
+           （2.0→2.5V），按标定算踢脚会**往下踢**（2.50→2.00V），等于亲手把唯一
+           能出料的振幅掐灭；必须锚定 max(标定, 当前实际值)。
         ② 救济通道不看 _amp_band——慢加的带退化成一点 (2.0, 2.0)，会把踢脚
            顶死在标定值上（日志"顶 2.00V"）。踢脚上限 = 标定+AMP_ESCALATE_V，
            与微调带无关。
+
+        **粉级封锁（2026-10-29 用户定）**：``spec.zero_rate_pulse = False`` 的粉
+        （目前只有封堵剂2）任何情况下都不走这条路径——它的补偿手段是放宽后的
+        振幅带，不是脉冲。这里再做一次防御，防止以后有别的分支绕过调用方的判断。
         """
+        if not spec.zero_rate_pulse:
+            self._amp_heartbeat(
+                spec, mass, elapsed, cmd,
+                "该粉标记 zero_rate_pulse=false：不走零速率脉冲救济（踢脚）")
+            return
         base = float(spec.amplitude_vpp)
         if spec.name == "slow":
             # 慢加踢脚锚点 = 标定值（用户 13:31 原方：2V 标定就踢到 3V×0.5s）。
@@ -2869,31 +3257,63 @@ class DispenseRunner:
         else:
             anchor = max(base, float(self._applied_amp))   # 坑①：锚定当前实际振幅
         cap = round(base + AMP_ESCALATE_V, 2)          # 坑②：与微调带无关的硬顶
-        if elapsed - float(self._stall_wait_s) < self._tau_est + self._period_est:
+        # 冷却判定（2026-10-27 13:35 加负值兜底）：正常口径是"上一脚回落后再等 τ+T"。
+        # 事故回顾：13:29 那次加粉 `_stall_wait_s` 带着上一次加粉的 189s 进新的一次加粉，新的一次加粉 elapsed
+        # 才 41s → `elapsed - 189` 为负、恒小于 τ+T → 每拍都判"冷却中"，一脚都不踢，
+        # 振幅卡在带顶、速率 0，只能人工停。所以这里遇到"锚点比现在还晚"一律当
+        # "本次加粉还没踢过"处理并清掉旧锚点，绝不允许陈旧时间戳锁死救济。
+        cooldown_s = float(self._tau_est) + float(self._period_est)
+        stall_since = elapsed - float(self._stall_wait_s)
+        if stall_since < 0.0:
+            self._stall_wait_s = -99.0
+            stall_since = elapsed + 99.0
+        if stall_since < cooldown_s:
             self._amp_heartbeat(
                 spec, mass, elapsed, cmd,
-                f"救济冷却中（等 τ+T = {self._tau_est + self._period_est:.0f}s "
-                f"看上一脚有没有踢开）")
+                f"救济冷却中（等 τ+T = {cooldown_s:.0f}s "
+                f"看上一脚有没有踢开；已过 {stall_since:.0f}s）")
             return
         tries = int(self._amp_kick_tries)
         kick_amp = round(min(cap, anchor + AMP_KICK_DELTA_V
                              + tries * AMP_KICK_ESCALATE_V), 2)
-        if tries > 0 and kick_amp <= float(self._amp_kick_last_amp) + 0.015:
-            self._amp_saturated = True
-            self._amp_lock_reason = f"踢粉到顶 {cap:.2f}V 仍不出料"
-            self._log(f"踢粉已经到顶 {cap:.2f}V（标定 {base:.2f}V "
-                      f"+{AMP_ESCALATE_V:.2f}V）仍不出料"
-                      + (f"（{detail}）" if detail else "")
-                      + "——请检查料斗是否搭桥/缺料、推杆开度是否够。振幅不再往上加")
-            return
+        # ★ 2026-10-27 16:25 修 bug（用户："脉冲信号只作用了一次之后再也不会触发"）：
+        # 旧判据是"算出来的这一脚振幅没有比上一脚更高 → 判踢粉到顶、永久停手"。
+        # 但锚点 anchor 已经被速率环抬到带顶时（2.50V），**第一脚** 2.50+1.00=3.50V
+        # 正好等于硬顶 3.50V，于是第二脚算出来还是 3.50V ≤ 上一脚 → 一脚都不再踢。
+        # 16:19 那次加粉润滑剂1 就是这样：kick_count 停在 1，后面每拍只写"振幅已停手
+        # （踢粉到顶 3.50V 仍不出料）"——可那一脚其实踢出了 9mg，料道是通的。
+        # 新口径：硬顶只意味着"振幅不再往上加"，**在硬顶这一档可以反复踢**；
+        # 判死改成看"这一脚到底踢出来没有"——连续 AMP_KICK_MAX_EMPTY 脚空才停手。
+        capped = tries > 0 and kick_amp <= float(self._amp_kick_last_amp) + 0.015
+        if capped:
+            gain_total = float(mass) - float(self._amp_kick_m0_total)
+            if tries >= AMP_KICK_MAX_TRIES:
+                why = f"本段已踢 {tries} 脚仍追不上（振幅到硬顶，无法再高）"
+            elif (tries >= AMP_KICK_MIN_TRIES_BEFORE_STOP
+                    and gain_total < AMP_KICK_MIN_TOTAL_GAIN_MG):
+                why = (f"到顶后踢了 {tries} 脚累计只涨 {gain_total:.0f}mg"
+                       f"（< {AMP_KICK_MIN_TOTAL_GAIN_MG:.0f}mg）")
+            else:
+                why = ""
+            if why:
+                self._amp_saturated = True
+                self._amp_lock_reason = f"踢粉到顶 {cap:.2f}V：{why}"
+                self._log(f"踢粉已经到顶 {cap:.2f}V（标定 {base:.2f}V "
+                          f"+{AMP_ESCALATE_V:.2f}V）：{why}"
+                          + (f"（{detail}）" if detail else "")
+                          + "——请检查料斗是否搭桥/缺料、推杆开度是否够。振幅不再往上加")
+                return
+            kick_amp = cap          # 振幅不再加，就在硬顶这一档继续踢
         self._stall_wait_s = elapsed
-        self._amp_kick_watch = None    # 新的一脚取代旧观察窗
         self._amp_kick = {"amp": kick_amp, "base": float(self._applied_amp),
                           "until": elapsed + AMP_KICK_HOLD_S, "fired": elapsed,
                           "m0": float(mass)}
         self._kick_count += 1
         self._amp_kick_tries = tries + 1
         self._amp_kick_last_amp = kick_amp
+        if tries == 0:
+            # 本段第一脚：记下累计增重的起点（后面判"这几脚到底有没有出料"）
+            self._amp_kick_m0_total = float(mass)
         self._amp_changes += 1
         self._amp_probe = None          # 踢脚是脉冲动作，不算微调增益样本
         self._prev_eval_rate = None     # 高幅瞬态会污染趋势闸
@@ -2901,7 +3321,8 @@ class DispenseRunner:
         self._set_amplitude(
             kick_amp, elapsed,
             f"{STAGE_TEXT[spec.name]}{mode}：踢一脚 → 瞬间抬到 {kick_amp:.2f}V "
-            f"持续 {AMP_KICK_HOLD_S:.1f}s（第 {tries + 1} 脚，顶 {cap:.2f}V）"
+            f"持续 {AMP_KICK_HOLD_S:.1f}s（第 {tries + 1} 脚，顶 {cap:.2f}V"
+            f"{'，已在硬顶重复踢' if capped else ''}）"
             + (f"，{detail}" if detail else ""))
 
 
@@ -2945,7 +3366,7 @@ class DispenseRunner:
         """脉冲期间盯秤，读数到 ``watch_at`` 立刻掐输出；返回 True 表示是提前掐的。
 
         为什么要有刹车：不出粉时我们会把振幅抬到 5V、脉冲拉到 2.5s，一旦料突然下来，
-        4V 满流就有 28mg/s，2.5s 能冲出 70mg——一发就把整炉冲爆。秤有滞后
+        4V 满流就有 28mg/s，2.5s 能冲出 70mg——一发就把整次加粉冲爆。秤有滞后
         （粉还在空中），所以 watch_at 要留 ``TRIM_PULSE_WATCH_MARGIN_MG`` 余量。
         """
         end = time.monotonic() + max(0.0, float(seconds))
@@ -2970,7 +3391,7 @@ class DispenseRunner:
     def _trim_amp_down_floor(self) -> float:
         """缓补降幅的地板。
 
-        不能降到"已知振不出粉"的死点附近：那炉 2.60V 一粒不出、3.10V 才出，
+        不能降到"已知振不出粉"的死点附近：那次加粉 2.60V 一粒不出、3.10V 才出，
         降到 2.60V 只会白振一发再把振幅加回去（拉锯）。所以地板 =
         ``_trim_amp_dead + TRIM_AMP_DEAD_MARGIN_V``，再兜一个 ``TRIM_AMP_FLOOR_VPP``。
         """
@@ -3037,12 +3458,12 @@ class DispenseRunner:
 
         2026-10-23 用户口径："缓补每缓补一次等待 2-3s 根据重量再进行缓补"。
         下限 2s 的物理原因：猝发刚停时秤的极差很快进 2mg，但粉还在落料口往下走，
-        0.8s 判稳会把"暂时的平台"当成"落完了"——那炉 205mg 判稳收工、收尾又涨到 211mg，
+        0.8s 判稳会把"暂时的平台"当成"落完了"——那次加粉 205mg 判稳收工、收尾又涨到 211mg，
         偏重 11mg 出验收。等满 2s 再判，单发到底落了多少才算得准。
         上限 3s：一直不稳（称台在晃/粉流没断）就按当前读数走，卡死比差 1mg 更糟。
         期间持续 _record，页面和 run 文件都能看到缓补段的采样。
 
-        ``abort_at``：跑到这个质量就立刻收，不再等满 max_s（2026-10-23 11:09 那炉：
+        ``abort_at``：跑到这个质量就立刻收，不再等满 max_s（2026-10-23 11:09 那次加粉：
         润滑剂1 关振后搅拌还在以 ~5mg/s 推尾料，入口等 8s 一路从 186 涨到 228，
         页面看着像"一直在缓补"，其实一颗脉冲都没发。已经超了就没必要继续等。）
         """
@@ -3061,10 +3482,12 @@ class DispenseRunner:
                 window.pop(0)
             self._record(elapsed, mass, 0.0, stage, learn=False)
             if abort_at is not None and mass >= abort_at:
-                self._log(f"{note}：已到 {mass:.1f}mg（≥ {abort_at:.0f}mg 停手线），提前结束等待")
+                self._log(f"{note}：等了 {waited:.2f}s 就到 {mass:.1f}mg"
+                          f"（≥ {abort_at:.0f}mg 停手线）——这段增重是空中/腔内的存料"
+                          f"落下来的，不是脉冲打出来的，提前结束等待")
                 return mass, elapsed
             if waited >= max_s:
-                self._log(f"{note}：等 {waited:.1f}s 天平仍在动，按当前读数 {mass:.1f}mg 继续")
+                self._log(f"{note}：等满 {waited:.1f}s 未判稳，按当前读数 {mass:.1f}mg 继续")
                 return mass, elapsed
             if (waited >= min_s and len(window) >= 8
                     and max(window) - min(window) <= TRIM_STABLE_RANGE_MG):
@@ -3072,8 +3495,21 @@ class DispenseRunner:
             self._stop_event.wait(0.1)
         return mass, elapsed
 
-    def _trim_pulse_loop(self, mass: float, elapsed: float, target: int) -> str:
+    def _trim_pulse_loop(self, mass: float, elapsed: float, target: int,
+                         source: str = "slow", *,
+                         hold_amp: bool = False,
+                         amp_start: float | None = None) -> str:
         """缓补主循环：开振 pulse_s 秒 → 关振 → 等落定称增重 → 自适应下一发时长。
+
+        ``hold_amp`` / ``amp_start``（2026-10-27 13:46 用户）：**缓补开关关闭时**的
+        收尾定幅补差。用户看到失水剂2 那次加粉 1987/2000mg（低验收线 1990）直接判偏轻收场，
+        原话："没有开缓补功能的加粉，假如最后停机时质量少了，进行缓补，比如这个就
+        0.30V 50RPM 搅拌缓补 0.4s 即可到达要求"。
+        这个模式与正常缓补的区别只有两点：
+          ① 振幅**锁定**在 ``amp_start``（页面慢加那一行，这次加粉 0.30V），整段不抬档；
+          ② 没出粉只拉长搅拌预转，不往上试探（"只补不试探"），出粉也不退档。
+        其余（0.40s 恒定时长、每发称重、进验收带就停手）与正常缓补完全一致。
+        设 ``hold_amp=False`` 时行为与原来一模一样（慢加尾段缓补、trim 开启的补差）。
 
         为什么用"短促开振"而不是压低振幅连续出：剩余 20~40mg 时慢加的连续流
         落点误差有 ±几 mg（惯性余料 + 判停滞后），对 ±10mg 的验收太毛；
@@ -3090,7 +3526,7 @@ class DispenseRunner:
         **振幅也会往下走**（2026-10-23 16:05 用户："同一幅度第二次脉冲要根据上次的
         增重来判断，这次同一幅度加多了太多，应该稍微减小一些幅度"）：同一振幅下
         剩的量已经不到上发增重的 1.5 倍 → 发之前先降 0.3V；同一振幅下这一发增重
-        达到上一发的 1.8 倍（1200mg 那炉 3.10V：+12mg 之后 +38mg）→ 判放量，降 0.3V。
+        达到上一发的 1.8 倍（1200mg 那次加粉 3.10V：+12mg 之后 +38mg）→ 判放量，降 0.3V。
         地板 = 最近一次"完全没出粉"的振幅 + 0.25V，降不到死点上去白振。
 
         **抬档后一出粉就退档**（2026-10-26 10:18 用户硬规矩）：抬振幅只是"试探能不能
@@ -3104,7 +3540,7 @@ class DispenseRunner:
         ``max(TRIM_AMP_FLOOR_VPP, 当前 − 1.0V)``，**可以退到 3V 以下**——
         3.5V 出了就回 2.5V、4.0V 出了回 3.0V、4.5V 回 3.5V。
         退下去那档若一粒不出会走"抬 0.5V"回来，由 ``_trim_backoff_target`` 防抖收敛
-        （同一炉不会退到同一档两次：退过没出 → 直接认定当前档是工作点）。
+        （同一次加粉不会退到同一档两次：退过没出 → 直接认定当前档是工作点）。
 
         **脉冲时长恒 0.40s**（2026-10-26 10:32 用户："全部设为 0.4 秒，不变，只变幅度即可，
         慢慢出就行"）：不再按增重自适应（×1.5 / ×0.65）、不按剩余量比例缩短、加多了也不
@@ -3124,14 +3560,26 @@ class DispenseRunner:
         # 偏轻 10mg 以内也停：单发脉冲本身就是 10mg 量级，为凑最后 3mg 再发一发
         # 反而把结果顶到 +10mg 之外，那是自己把自己搞出验收。
         lower, upper = acceptance_limits(target)
-        self._log(f"进入缓补：{mass:.1f}/{target} mg（剩 {target - mass:.0f}mg）——"
-                  f"停连续振动，改为每发固定 {TRIM_PULSE_S:.2f}s 的脉冲补料（出多少只看振幅）"
-                  f"（振幅从 {self._applied_amp:.2f}V 起：没出粉每发只抬 "
-                  f"{TRIM_AMP_NO_GAIN_STEP_VPP:.1f}V、顶 {TRIM_AMP_MAX_VPP:.1f}V；"
-                  f"振幅 >{TRIM_AMP_BACKOFF_MIN_VPP:.1f}V 出了粉就回退 "
-                  f"{TRIM_AMP_BACKOFF_STEP_VPP:.1f}V（3.5→2.5、4.0→3.0，可退到 3V 以下）；"
-                  f"≤{TRIM_AMP_BACKOFF_MIN_VPP:.1f}V 不触发回退；"
-                  f"单发 >{TRIM_GAIN_TOO_MUCH_MG:.0f}mg 算加多了）")
+        # 缓补只有两个入口：慢加剩 ≤40mg 正常进、判停偏轻补差（source=topup）。
+        # 熔断**不再**走到这里（2026-10-26 18:35 用户："熔断只发生在阶段切换之间"）。
+        label = "补差" if hold_amp else STAGE_TEXT["trim"]
+        if hold_amp:
+            want_amp = float(amp_start) if amp_start is not None else float(self._applied_amp)
+            self._log(f"进入{label}：{mass:.1f}/{target} mg（剩 {target - mass:.0f}mg）——"
+                      f"停连续振动，每发固定 {TRIM_PULSE_S:.2f}s、"
+                      f"搅拌 {float(self._applied_stir):.0f}RPM，"
+                      f"**振幅锁定 {want_amp:.2f}V**（页面慢加那一行，"
+                      f"没出粉也不抬档、只加长预转），补进验收 "
+                      f"{lower:.0f}~{upper:.0f}mg 就停手")
+        else:
+            self._log(f"进入{label}：{mass:.1f}/{target} mg（剩 {target - mass:.0f}mg）——"
+                      f"停连续振动，每发固定 {TRIM_PULSE_S:.2f}s 的脉冲补料（出多少只看振幅）"
+                      f"（振幅从 {self._applied_amp:.2f}V 起：没出粉每发只抬 "
+                      f"{TRIM_AMP_NO_GAIN_STEP_VPP:.1f}V、顶 {TRIM_AMP_MAX_VPP:.1f}V；"
+                      f"振幅 >{TRIM_AMP_BACKOFF_MIN_VPP:.1f}V 出了粉就回退 "
+                      f"{TRIM_AMP_BACKOFF_STEP_VPP:.1f}V（3.5→2.5、4.0→3.0，可退到 3V 以下）；"
+                      f"≤{TRIM_AMP_BACKOFF_MIN_VPP:.1f}V 不触发回退；"
+                      f"单发 >{TRIM_GAIN_TOO_MUCH_MG:.0f}mg 算加多了）")
         if self._vib_running:
             self.hub.sig_output(False)
             self._vib_running = False
@@ -3139,29 +3587,88 @@ class DispenseRunner:
         # 振动关着也以 ~5mg/s 往下塌（腔里的料被搅拌推出去），搅拌不转，"等落定"才等得到
         # 真正的稳定。脉冲期间才临时把搅拌带起来（见 `_trim_stir_on`）。
         self._trim_stir_rpm = float(self._applied_stir)
-        self._trim_stir_off(why="慢加结束，进缓补前先停搅拌")
+        # 定幅补差：先把振幅摆到调用方给的值（页面慢加那一行）再开始等料。
+        # 此时振动是关的，`_set_amplitude` 只改信号源幅度、不输出，安全。
+        if amp_start is not None and abs(float(amp_start) - float(self._applied_amp)) > 0.01:
+            self._set_amplitude(
+                float(amp_start), elapsed,
+                f"收尾补差：振幅取慢加那一行 {float(amp_start):.2f}V"
+                f"（原 {self._applied_amp:.2f}V，整段锁定不抬档）",
+                ceiling=TRIM_AMP_MAX_VPP)
+        # ★ 2026-10-26 18:04 现场（用户："慢加之后的缓补好像没有等待粉末沉积"）——
+        # 旧顺序是"停振 → 立刻 stir_stop(immediate) → 称重"。`stir_stop` 走串口要
+        # ~0.4s，这 0.4s 里秤一直在涨而程序什么都没做；那次加粉 1978mg 进来，停搅拌回来
+        # 第一次读数就是 **2048mg（+70mg）**，直接越过 2010 的停手线，缓补 0.2s 结束、
+        # 0 发脉冲。所以"等待"在代码里存在，但被夹在两次串口动作中间，等于没等。
+        # 现在把它拆成两段，各自都能在页面/CSV 上看见：
+        #   ① 停振、**搅拌保持** TRIM_ENTRY_HOLD_S：先看腔内存料会不会自己泄；
+        #   ② 再停搅拌，继续等落定 TRIM_TAIL_SETTLE_MAX_S。
+        # ①的存在也让"崩落到底是停振引起的、还是停搅拌引起的"有了判据。
+        entry_mass = mass
+        if self._trim_stir_rpm > 1.0:
+            mass, elapsed = self._trim_wait_settled(
+                "进缓补：已停振、搅拌保持，先看腔内存料泄不泄",
+                min_s=TRIM_ENTRY_HOLD_S, max_s=TRIM_ENTRY_HOLD_S, abort_at=upper)
+            hold_gain = mass - entry_mass
+            if abs(hold_gain) >= 1.0:
+                self._log(f"进缓补：停振后搅拌保持 {TRIM_ENTRY_HOLD_S:g}s，"
+                          f"腔内存料泄了 {hold_gain:+.0f}mg"
+                          f"（{entry_mass:.0f} → {mass:.0f}mg，还没停搅拌）")
+        self._trim_stir_off(why=f"{label}前先停搅拌")
         trim_spec = TrimSpec(stir_rpm=self._trim_stir_rpm, rod_ff=int(self._applied_window),
-                             amplitude_vpp=float(self._applied_amp))
+                             amplitude_vpp=float(self._applied_amp), source=source)
         self._start_stage_log(trim_spec, mass, elapsed)
         # 先把慢加的尾料等干净：尾料落定算进缓补的账，第一发脉冲才量得准。
         # 尾料增重必须显式记一条——慢加冲快时尾料可能有几十 mg（17:27 那次
         # 3V 慢加尾料 67mg），页面只看到"0 发脉冲质量却在涨"就没法对账。
-        entry_mass = mass
+        # 注：`entry_mass` 是**停振那一刻**的质量（上面 ① 之前记的），所以这里的
+        # tail_gain 是"停振 + 停搅拌"两段泄料的合计，不是只算最后一段。
         mass, elapsed = self._trim_wait_settled("进缓补：搅拌已停，等尾料落定",
                                                 max_s=TRIM_TAIL_SETTLE_MAX_S,
                                                 abort_at=upper)
         tail_gain = mass - entry_mass
         if tail_gain >= 1.0:
-            self._log(f"缓补入口：慢加尾料落定 +{tail_gain:.0f}mg"
+            self._log(f"缓补入口：慢加尾料落定 +{tail_gain:.0f}mg（停振后含停搅拌全程）"
                       f"（当前 {mass:.1f}/{target}，剩 {max(0.0, target - mass):.0f}mg"
                       f"{'——尾料已够，不再发脉冲' if target - mass <= 0 else ''}）")
+        elif tail_gain <= -1.0:
+            self._log(f"缓补入口：尾料净减 {tail_gain:.0f}mg"
+                      f"（当前 {mass:.1f}/{target}，天平可能被碰过/清零漂移）")
+        # ── 存粉保护（2026-10-28 14:30 用户）────────────────────────────────
+        # 入口观察窗泄料多 = 料道里挂着存货（抑制剂 3000mg 那次：粗加断流搅拌 150
+        # 一直转，判停时 2987 差 3mg，之后任何搅拌都会倾泻，收尾涨到 3052）。
+        # 此时脉冲**不起搅拌**，低幅振动试探、慢慢加幅，让存粉细水长流地出。
+        stock_mode = (not hold_amp) and tail_gain >= TRIM_STOCK_GAIN_MG
+        stock_amp_restored = float(self._applied_amp)   # 转回正常模式时恢复用
+        if stock_mode:
+            start_amp = max(TRIM_AMP_FLOOR_VPP, TRIM_STOCK_AMP_START_VPP)
+            self._log(f"**存粉保护生效**：入口泄料 {tail_gain:.0f}mg ≥ "
+                      f"{TRIM_STOCK_GAIN_MG:.0f}mg，料道挂着存货——脉冲不起搅拌"
+                      f"（搅拌一丢就倾泻），振幅从 {start_amp:.2f}V 起低幅试探，"
+                      f"没出粉每发只 +{TRIM_STOCK_AMP_STEP_VPP:.1f}V 慢慢加，"
+                      f"出了粉就停在这档")
+            if abs(start_amp - float(self._applied_amp)) > 0.01:
+                self._set_amplitude(start_amp, elapsed,
+                                    f"存粉保护：振幅降到 {start_amp:.2f}V 起步"
+                                    f"（原 {self._applied_amp:.2f}V），"
+                                    f"靠振动少量带出存粉",
+                                    ceiling=TRIM_AMP_MAX_VPP)
+        # 页面顶部那句话到这里必须换掉：旧版整个脉冲段一次 `_set_state` 都没有，顶部会
+        # 一直冻在上一个相位的文案（例如"停振等余料 xxx/2000mg"），看着就像程序卡住/跳段。
+        self._set_state("running",
+                        f"{label}：{mass:.0f}/{target}mg（剩 {max(0.0, target - mass):.0f}mg）"
+                        f"——停连续振动，一发一称补足")
         duration = TRIM_PULSE_S
         preroll = TRIM_STIR_SPINUP_S
         count = 0
         no_gain = 0
+        # 停手线：正常缓补就挂在下验收线上（一发 10mg 量级，多补一发就顶出去）；
+        # 定幅补差多发一档就抬到"下界 +2mg"——收尾 `_settle` 还会再掉 1~2mg，
+        # 正好停在 lower 上时一称就掉出带（2026-10-27 仿真复现 199 → 198）。
+        stop_at = float(lower) if not hold_amp else min(float(upper), float(lower) + 2.0)
         while not self._stop_event.is_set():
             remaining = target - mass
-            if mass >= lower:
+            if mass >= stop_at:
                 if mass > upper:
                     why = f"已超验收上限 {upper:.0f}mg（超目标 {mass - target:.0f}mg）"
                 elif remaining <= 0.0:
@@ -3182,11 +3689,12 @@ class DispenseRunner:
                                 - float(self._applied_amp)) < 0.02)
             ref_gain = float(self._trim_last_gain) if same_amp else 3.0
             # ② 剩余量已经跟"这档振幅上一发的产出"差不多 → **发之前先降一档**。
-            #    1200mg 那炉就是这么超的：剩 13mg、上一发同振幅 3.10V 出 12mg，
+            #    1200mg 那次加粉就是这么超的：剩 13mg、上一发同振幅 3.10V 出 12mg，
             #    照发一整发 3.10V，结果这一发出了 38mg（同振幅出料量差 3 倍）。
             #    **只在稳定线（3.0V）以上才降**：≤3V 是稳定工况，降下去就空振，
             #    剩量少靠 ③ 的脉冲缩短来压（2026-10-26 10:26 用户）。
-            if (same_amp and remaining < TRIM_AMP_OVER_RATIO * ref_gain
+            if (not hold_amp and not stock_mode and same_amp
+                    and remaining < TRIM_AMP_OVER_RATIO * ref_gain
                     and float(self._applied_amp) > TRIM_AMP_BACKOFF_MIN_VPP + 0.01):
                 floor_v = max(self._trim_amp_down_floor(),
                               TRIM_AMP_BACKOFF_MIN_VPP)
@@ -3208,8 +3716,11 @@ class DispenseRunner:
             pulse_s = duration
             fired = False
             # 出料窗口开始：先起搅拌并**预转**到额定转速，脉冲结束立刻停。
-            self._trim_stir_on()
-            self._trim_stir_preroll(preroll)
+            # 存粉保护模式下**不起搅拌**（搅拌一丢存粉就倾泻，2026-10-28 14:30
+            # 抑制剂 3000mg 病案：判停只差 3mg，收尾称重却涨 52mg），只靠振动细水长流。
+            if not stock_mode:
+                self._trim_stir_on()
+                self._trim_stir_preroll(preroll)
             # 脉冲期间盯秤的刹车线：宁可少一点多补一发，也不要一发冲过头
             watch_at = min(float(target), float(upper)) - TRIM_PULSE_WATCH_MARGIN_MG
             cut_early = False
@@ -3237,29 +3748,86 @@ class DispenseRunner:
                 self._vib_running = False
             count += 1
             # 出料窗口结束：立即停搅拌再称重，称出来的才是这一发真正落了多少。
-            self._trim_stir_off(why=f"第 {count} 发脉冲结束，停搅拌称重")
+            # 存粉模式下本来就没起搅拌，不重复下发停搅拌指令。
+            if not stock_mode:
+                self._trim_stir_off(why=f"第 {count} 发脉冲结束，停搅拌称重")
             mass, elapsed = self._trim_wait_settled(f"第 {count} 发后等落定")
             gain = mass - before
             prev_gain = float(self._trim_last_gain)
             prev_amp = float(self._trim_last_gain_amp)
             self._trim_last_gain = float(gain)
             self._trim_last_gain_amp = float(self._applied_amp)
-            self._log(f"缓补第 {count} 发：振 {pulse_s:.2f}s @{self._applied_amp:.2f}V"
-                      f"（预转 {preroll:.2f}s）→ {gain:+.0f}mg，"
-                      f"累计 {mass:.1f}/{target} mg（剩 {max(0.0, target - mass):.0f}mg"
-                      f"{'，到刹车线提前掐断' if cut_early else ''}）")
+            if stock_mode:
+                self._log(f"{label}第 {count} 发（存粉·无搅拌）：振 {pulse_s:.2f}s "
+                          f"@{self._applied_amp:.2f}V → {gain:+.0f}mg，"
+                          f"累计 {mass:.1f}/{target} mg（剩 {max(0.0, target - mass):.0f}mg"
+                          f"{'，到刹车线提前掐断' if cut_early else ''}）")
+            else:
+                self._log(f"{label}第 {count} 发：振 {pulse_s:.2f}s @{self._applied_amp:.2f}V"
+                          f"（预转 {preroll:.2f}s）→ {gain:+.0f}mg，"
+                          f"累计 {mass:.1f}/{target} mg（剩 {max(0.0, target - mass):.0f}mg"
+                          f"{'，到刹车线提前掐断' if cut_early else ''}）")
+            # 每发都刷一次状态：页面能直接看到"第几发、补了多少、还差多少"，
+            # 不会出现"阶段写着缓补、顶部还停在熔断那句话"的错位。
+            self._set_state("running",
+                            f"{label} 第 {count} 发：{gain:+.0f}mg → {mass:.0f}/{target}mg"
+                            f"（剩 {max(0.0, target - mass):.0f}mg）")
             self._record(elapsed, mass, gain / max(pulse_s, 0.05), "trim")
             if gain < 0.5:
                 no_gain += 1
                 if no_gain >= TRIM_NO_GAIN_LIMIT:
-                    self._log(f"缓补连续 {no_gain} 发没出粉（幅已抬到 "
-                              f"{self._applied_amp:.2f}V/{TRIM_AMP_MAX_VPP:.1f}V、预转 {preroll:.2f}s、"
-                              f"杆 {self._applied_window}）——停手，请检查料斗是否搭桥/缺料")
+                    self._log(f"{label}连续 {no_gain} 发没出粉（幅"
+                              f"{'锁定在' if hold_amp else '已抬到'} "
+                              f"{self._applied_amp:.2f}V"
+                              f"{'' if hold_amp else f'/{TRIM_AMP_MAX_VPP:.1f}V'}、"
+                              f"预转 {preroll:.2f}s、杆 {self._applied_window}）"
+                              f"——停手，请检查料斗是否搭桥/缺料")
                     break
-                duration, preroll = self._trim_escalate_on_no_gain(
-                    count, elapsed, no_gain, duration, preroll)
+                if stock_mode:
+                    # 存粉保护：振幅只温柔地 +0.2V/发（不是正常模式的 0.5V），
+                    # 连续 TRIM_STOCK_MAX_NOGAIN 发还是一粒不出 → 料道确实空了，
+                    # 退出存粉模式：振幅恢复进缓补时的值，转回正常脉冲（起搅拌）。
+                    if no_gain >= TRIM_STOCK_MAX_NOGAIN:
+                        stock_mode = False
+                        no_gain = 0
+                        self._log(f"存粉试探 {TRIM_STOCK_MAX_NOGAIN} 发"
+                                  f"（幅已爬到 {self._applied_amp:.2f}V）仍一粒不出"
+                                  f"——料道应该空了，退出存粉模式：振幅恢复 "
+                                  f"{stock_amp_restored:.2f}V，转回正常脉冲（起搅拌）")
+                        if abs(stock_amp_restored - float(self._applied_amp)) > 0.01:
+                            self._set_amplitude(stock_amp_restored, elapsed,
+                                                f"存粉模式退出：振幅恢复 "
+                                                f"{stock_amp_restored:.2f}V",
+                                                ceiling=TRIM_AMP_MAX_VPP)
+                    else:
+                        new_amp = round(min(TRIM_AMP_MAX_VPP,
+                                            float(self._applied_amp)
+                                            + TRIM_STOCK_AMP_STEP_VPP), 2)
+                        if new_amp > float(self._applied_amp) + 0.01:
+                            self._set_amplitude(new_amp, elapsed,
+                                                f"存粉模式第 {no_gain} 发没出粉："
+                                                f"振幅 +{TRIM_STOCK_AMP_STEP_VPP:.1f}V → "
+                                                f"{new_amp:.2f}V（慢慢加，不搅拌）",
+                                                ceiling=TRIM_AMP_MAX_VPP)
+                elif hold_amp:
+                    # 定幅补差（缓补关闭）：不抬振幅，只让搅拌多带一会儿。
+                    # 抬档是"试探能不能出料"，一旦出粉就会多冲——用户要的是慢慢补。
+                    preroll = min(TRIM_STIR_SPINUP_MAX_S,
+                                  preroll + TRIM_STIR_SPINUP_GROW_S)
+                    self._log(f"补差第 {count} 发没出粉：振幅锁定 "
+                              f"{float(self._applied_amp):.2f}V 不抬档"
+                              f"（缓补关闭只补不试探）——预转加到 {preroll:.2f}s 再试"
+                              f"（脉冲仍固定 {TRIM_PULSE_S:.2f}s）")
+                else:
+                    duration, preroll = self._trim_escalate_on_no_gain(
+                        count, elapsed, no_gain, duration, preroll)
             else:
                 no_gain = 0
+                if stock_mode:
+                    # 存粉模式出了粉：**就停在这档**（不退档不抬档、不学"可接受档位"）
+                    # ——存粉本来就怕倾泻，出多少算多少，剩下的量靠多发几发收。
+                    self._log(f"存粉模式出粉了：{self._applied_amp:.2f}V 能带出料，"
+                              f"就停在这档继续出")
                 # ── 抬档后一出粉就退档（2026-10-26 用户硬规矩）────────────────
                 # 旧版这里只管"没出粉往上抬"，出粉了就认定这个档位是工作点：
                 # 2000mg 那次 4.00V 第一发 +16mg、第二发 +38mg，就是这么冲出去的。
@@ -3268,8 +3836,8 @@ class DispenseRunner:
                 #   ② 单发 >18mg（TRIM_GAIN_TOO_MUCH_MG）→ 不管档位高低都退；
                 #   ③ 退到某档后出料 ≤18mg 就记成"可接受档位"，以后回到这一档不再退。
                 # **回退触发线 3.0V + 一次退 1.0V**（10:26 / 10:44 用户）：
-                # 只有 >3.0V 出粉才退，退到 max(1.0V, 当前−1.0V)，**可退到 3V 以下**
-                # （3.5→2.5、4.0→3.0）。但同一个目标档一炉只试一次：退下去没出粉、
+                # 只有 >3.0V 出粉才退，退到 max(设备下限 0.01V, 当前−1.0V)**可退到 3V 以下**
+                # （3.5→2.5、4.0→3.0）。但同一个目标档一次加粉只试一次：退下去没出粉、
                 # 又被抬回来才出 → 那档以下一粒不出，就此认定当前档为工作点，不再来回。
                 amp_used = float(self._applied_amp)
                 too_much = gain > TRIM_GAIN_TOO_MUCH_MG
@@ -3277,7 +3845,9 @@ class DispenseRunner:
                 self._trim_pulse_escalated = False
                 above_line = amp_used > TRIM_AMP_BACKOFF_MIN_VPP + 0.01
                 back_off = False
-                if mass < lower and above_line:
+                if stock_mode:
+                    pass    # 存粉模式不退档不抬档（上面已打日志），退档块整段跳过
+                elif mass < lower and above_line:
                     want = round(max(TRIM_AMP_FLOOR_VPP,
                                      amp_used - TRIM_AMP_BACKOFF_STEP_VPP), 2)
                     if too_much or (escalated_pulse
@@ -3317,7 +3887,7 @@ class DispenseRunner:
                         self._set_amplitude(new_amp, elapsed,
                                             f"{why}（{amp_used:.2f}→{new_amp:.2f}V）",
                                             ceiling=TRIM_AMP_MAX_VPP)
-                        # 记住退到哪一档：同一炉里再想退到 ≤ 这一档就直接认定工作点
+                        # 记住退到哪一档：同一次加粉里再想退到 ≤ 这一档就直接认定工作点
                         self._trim_backoff_target = new_amp
                         if too_much:
                             # 这个档位已经证明"一发 18mg 以上"，不能再被当成可接受档位
@@ -3336,7 +3906,8 @@ class DispenseRunner:
                 # → 这档振幅对这个粉太凶，降一档留给下一发；已经到位就不再动信号源。
                 # **只在回退触发线（3.0V）以上才降**：≤3V 是稳稳出料的工况，降下去就空振，
                 # 放量只能靠"少发几发 + 盯秤掐断"收（2026-10-26 10:32 用户：时长不动）。
-                if (not back_off and above_line and mass < lower and prev_gain >= 1.0
+                if (not stock_mode and not back_off and above_line and mass < lower
+                        and prev_gain >= 1.0
                         and abs(prev_amp - float(self._applied_amp)) < 0.02
                         and gain >= TRIM_AMP_BLOWUP_RATIO * prev_gain):
                     floor_v = max(self._trim_amp_down_floor(),
@@ -3353,7 +3924,7 @@ class DispenseRunner:
                             ceiling=TRIM_AMP_MAX_VPP)
         # 兜底停搅拌：正常路径每发结束都停过了，这里只防"脉冲中途异常/停止"把搅拌留在转着
         self._trim_stir_off(why="缓补收尾")
-        # 退猝发待命（WO0s+Wc0s）：这炉用过真脉冲的话设备还停在"手动触发模式"，
+        # 退猝发待命（WO0s+Wc0s）：这次加粉用过真脉冲的话设备还停在"手动触发模式"，
         # 输出通道开着但只认 WP1s 触发——不退出来，下次加粉设了方波也不震
         # （2026-10-22 18:23 用户指出的坑）。放在 stop 判断之前，中止路径也退。
         try:
@@ -3417,10 +3988,13 @@ class DispenseRunner:
     # ------------------------------------------------------------------
 
     def _start_stage_log(self, spec: StagePlan, mass: float, elapsed: float) -> None:
+        trim_src = getattr(spec, "source", None)
         with self._lock:
             self._stage_log.append({
                 "stage": spec.name,
                 "stage_text": STAGE_TEXT[spec.name],
+                # 缓补段的来源（slow=慢加尾量正常缓补、topup=判停偏轻补差）
+                **({"trim_source": trim_src} if trim_src else {}),
                 "start_mass_mg": round(mass, 1),
                 "start_s": round(elapsed, 1),
                 "end_mass_mg": None,
@@ -3505,12 +4079,18 @@ class DispenseRunner:
         # 实际尾料远小于预测 → 收尾偏轻（本次 163/200，差 37mg 却直接结束）。
         # 缓补开启且缺口可补时：重启搅拌，回到缓补脉冲把差的部分一发一发补齐，
         # 补完重新沉降称重再判一次。只兜一次——补完仍偏轻就如实落盘。
-        if (verdict == "偏轻" and self._trim_on and ok and not estimated
+        # ★ 2026-10-27 13:46 用户："没有开缓补功能的加粉，假如最后停机时质量少了，
+        #   进行缓补"——所以这里**不再要求 `_trim_on`**。两种模式的差别：
+        #     · 缓补开 → 自适应脉冲（可抬档/退档），与慢加尾段缓补同一套；
+        #     · 缓补关 → 定幅补差：振幅锁在页面慢加那一行（失水剂2 = 0.30V），
+        #       50RPM 搅拌、每发 0.40s，不抬档不试探，补进验收带就停手。
+        #   触发条件不变：判停成功、终值来自真实称重（非 estimated）、偏轻且在补差上限内。
+        if (verdict == "偏轻" and ok and not estimated
                 and 0.0 < target - achieved <= TRIM_RESCUE_MAX_MG
                 and not getattr(self, "_trim_rescued", False)):
             self._trim_rescued = True
             # ★ 先别动搅拌（2026-10-23 11:09 教训）：判停那一刻"停搅拌后的余料"还没落完。
-            #   那炉判停 170mg 就立刻重启搅拌，转子上挂的粉被带下来 58mg，
+            #   那次加粉判停 170mg 就立刻重启搅拌，转子上挂的粉被带下来 58mg，
             #   最后 233mg 偏重 33mg。搅拌停着再等 3~6s，质量常常自己就走进了窗口，
             #   这种时候重启搅拌补差纯属自己给自己加油门。
             quiet_mass, _quiet_elapsed = self._trim_wait_settled(
@@ -3534,19 +4114,32 @@ class DispenseRunner:
             else:
                 self._log(f"判停预测失误：实际 {achieved:.1f}/{target} mg，差 "
                           f"{target - achieved:.0f}mg 低于下验收线——余料等过了仍不够，"
-                          f"转缓补脉冲补差（搅拌回 {slow_rpm:.0f} RPM）")
+                          f"转收尾补差（搅拌回 {slow_rpm:.0f} RPM）")
                 try:
                     self.hub.stir_start(slow_rpm, acc=self.STIR_ACC, direction=0)
                     self._applied_stir = slow_rpm
                 except Exception as error:      # noqa: BLE001
                     self._log(f"补差重启搅拌失败（{error}），脉冲补料照常进行")
                 # 不在这里等天平：`_trim_pulse_loop` 一进去就会把搅拌**立即停**再等落定，
-                # 现在多等一秒就是让转着的搅拌多送几 mg 下去（10-23 那炉白等了 3.1s / +16mg）。
+                # 现在多等一秒就是让转着的搅拌多送几 mg 下去（10-23 那次加粉白等了 3.1s / +16mg）。
                 mass_now = float(self._read_balance_raw()) - self._baseline
                 elapsed_now = time.monotonic() - self._t0
                 self._close_stage_log(mass_now, elapsed_now)   # 幂等，关掉可能开着的段
+                # 缓补关闭 → 定幅补差：振幅就用页面慢加那一行（不再往上试）
+                slow_amp = next(
+                    (float(getattr(item, "amplitude_vpp", 0.0) or 0.0)
+                     for item in (self._plan or []) if item.name == "slow"), 0.0)
+                hold = not self._trim_on
+                if hold:
+                    self._log(f"缓补关闭，但收尾偏轻 {target - achieved:.0f}mg 在补差上限内——"
+                              f"按慢加那一行定幅补差：{slow_amp:.2f}V / "
+                              f"{slow_rpm:.0f}RPM / 每发 {TRIM_PULSE_S:.2f}s"
+                              f"（振幅锁定，不抬档）")
                 try:
-                    outcome = self._trim_pulse_loop(mass_now, elapsed_now, target)
+                    outcome = self._trim_pulse_loop(
+                        mass_now, elapsed_now, target, source="topup",
+                        hold_amp=hold,
+                        amp_start=(slow_amp if hold and slow_amp > 0.0 else None))
                     self._log(f"补差结果：{outcome}")
                 finally:
                     mass_now = float(self._read_balance_raw()) - self._baseline
@@ -3567,7 +4160,7 @@ class DispenseRunner:
                     verdict = "合格"
 
 
-        # 前馈自修正：把这一炉"实测速率 / 标定预测速率"的比值回写粉体表，下一炉开度更准。
+        # 前馈自修正：把这一次加粉"实测速率 / 标定预测速率"的比值回写粉体表，下一次加粉开度更准。
         # 只在"正常判停 + 合格 + 终值来自真实称重"时更新——中途停机、超重保护、
         # 天平失联这些情况下的实际速率根本不可信，拿来修表只会越修越歪。
         ff_update = None
@@ -3579,7 +4172,7 @@ class DispenseRunner:
                     self._log(f"前馈自修正：「{self._workspace.name}」系数 → "
                               f"{ff_update['factor']:.3f}"
                               f"（本次加粉实测/标定 = {ff_update['sample']:.3f}）")
-            except Exception as error:      # noqa: BLE001 - 写回失败不影响本炉结果
+            except Exception as error:      # noqa: BLE001 - 写回失败不影响本次加粉结果
                 self._log(f"前馈自修正写回失败：{error}")
 
         # 切段惯性落料量写回粉体档案：下次切段直接把切换点提前这么多。
@@ -3599,7 +4192,7 @@ class DispenseRunner:
                                      for k, v in settle_update.items())
                     self._log(f"切段惯性已记住：「{self._workspace.name}」{brief}"
                               f"（下次切段点自动提前这么多）")
-            except Exception as error:      # noqa: BLE001 - 写回失败不影响本炉结果
+            except Exception as error:      # noqa: BLE001 - 写回失败不影响本次加粉结果
                 self._log(f"切段惯性写回失败：{error}")
 
         result = {
@@ -3626,6 +4219,11 @@ class DispenseRunner:
             "calibrated": self._config.get("calibrated"),
             "feedforward_update": ff_update,
             "settle_events": list(self._settle_events),
+            # 超速熔断的每一次触发（2026-10-26 18:04 补）：以前只进日志、不进结果文件，
+            # 复盘时想确认"熔断到底有没有工作"只能去翻 control-*.log。18:04 那次加粉就是
+            # 靠翻日志才发现 `_surge_rate` 在真机 0.266s 采样周期下永远凑不够点数、
+            # 熔断一次都没触发过。以后 `result.surge_events` 直接能看。
+            "surge_events": list(self._surge_events),
             "settle_update": settle_update,
             "settle_gate": (self._config.get("settle_gate") or {}),
             "config": dict(self._config),
@@ -3664,14 +4262,61 @@ class DispenseRunner:
         """振动参数写入（带重连重试的既有封装）。"""
         self.hub._sig_call(action)
 
+    def _open_vibration(self, why: str) -> None:
+        """开振动输出，**并在开闸后立刻复核一次幅度**（唯一开闸入口）。
+
+        为什么开闸后还要再写一遍幅度（2026-10-29 16:40 用户："切到粗加时会先按 2.7V
+        振动一下，然后再变 2V"）：段间是"关输出 → 写振幅 → 写占空 → 开推杆 → 开输出"，
+        幅度的写入全部落在**输出关闭**的窗口里。信号源如果只在 OUT=1 时才把 WC 应用
+        到模拟通道（或开闸瞬间先按上一次的寄存器起振），真出料的那一小段就还是上一段
+        的幅度（快加常到 2.88V），下一拍闭环才把它拉回 2.00V——观感就是"先按 2.7V 振
+        一下再变 2V"。
+        开闸后幂等复写一次，把这个窗口压到一条指令的时间（约 20–40ms，80Hz 下 1–3 个
+        周期），无论设备是哪一种语义都成立。
+
+        这里**只做开闸必需的参数写 + 开闸 + 复核幅度**，不发 `WO0s` 一类改变输出
+        状态的指令——17:10 曾在这里插过一次 `burst_off()`（`WO0s`+`Wc0s`），结果
+        快加段整段不振动。
+
+        **开闸前重设波形/频率/占空**（2026-10-29 17:26 加）：这三个是纯参数写，
+        不改变输出通断。之所以每次都要写一遍，是因为 `WO0s`（`_start` 退猝发、
+        缓补收尾都会发）会把输出波形复位，之后 `Wc1s` 只开通道不出波；重设一遍
+        就与 `_start` 的开场完全同构，无论设备此前停在什么状态都能正常出波。
+        """
+        try:
+            self._sig_write(lambda: (
+                self.hub.sig.set_waveform(self.WAVEFORM_SQUARE),
+                self.hub.sig.set_frequency(float(self._applied_freq)),
+                self.hub.sig.set_duty(self._applied_duty / 100.0),
+            ))
+        except Exception as error:            # noqa: BLE001 - 参数写失败也继续开闸，靠复核幅度兜底
+            self._log(f"开闸前重设波形失败（继续开闸，{why}）：{error}")
+        self.hub.sig_output(True)
+        self._vib_running = True
+        try:
+            self._sig_write(lambda: self.hub.sig.set_amplitude(float(self._applied_amp)))
+        except Exception as error:            # noqa: BLE001 - 复核失败不影响开闸本身
+            self._log(f"开闸后复核幅度失败（{why}）：{error}")
+        else:
+            self._log(f"③ 开闸：振动输出打开（{why}）｜开闸后复核幅度 "
+                      f"{self._applied_amp:.2f}Vpp")
+
     def _safe_stop_vibration(self) -> None:
         try:
-            # 退猝发待命（WO0s+Wc0s）再关输出：这炉用过缓补真脉冲时设备停在
-            # "手动触发模式"，只发 Wc0s 退不出触发模式，下次加粉设了方波也不震。
-            try:
-                self.hub.sig.burst_off()
-            except Exception:                 # noqa: BLE001 - 没进过猝发模式会报错，忽略
-                pass
+            # ★ 2026-10-29 17:26（用户："慢加依旧不震动"）：**停振只发 Wc0s，不许发 WO0s**。
+            #
+            # 原来这里先 `burst_off()`（= `WO0s` 关触发功能 + `Wc0s`）再 `Wc0s`。
+            # 实测后果：**切段之后的所有段全部哑振**——
+            #   · 17:20:48 那发：快加（没走沉降门）78mg/s 正常；走了沉降门的粗加
+            #     130s 只 +382mg、慢加 80s 只 +99mg，振幅一路顶到 3.00V 仍不出料；
+            #   · 17:18:38 那发：快加 → 粗加没走沉降门，粗加 21mg/s 也是搅拌出的粉。
+            # 对照 `_start` 的开场：它是 `burst_off()` 之后**紧接着重设方波/频率/占空/
+            # 幅度**，所以第一次开闸能正常震动。`WO0s` 把触发功能关掉的同时也把输出
+            # 波形复位了，之后单发 `Wc1s` 只开通道、不出波——这就是"软件说开着、
+            # 料却全靠搅拌"的根源（这台设备没有输出状态回读，查不出来）。
+            #
+            # 退猝发的职责留在 `_start`（每次加粉开头）和缓补收尾，那里后面都有重设
+            # 波形的动作；段间停振只关输出，波形状态一直保持，重新开闸立刻能出波。
             self.hub.sig_output(False)
         except Exception as error:            # noqa: BLE001 - 停振动失败必须留痕
             self._log(f"停止振动失败：{error}")
@@ -3713,7 +4358,7 @@ class DispenseRunner:
 
         返回 (最终原始计数, 是否稳定, 是否估计值)。天平完全读不到时用运行期间
         最后一次已知读数作估计值（并在结果里标 ``estimated=True``），
-        绝不因为"读不到"就把结果丢掉——操作员需要知道这一炉到底停在哪。
+        绝不因为"读不到"就把结果丢掉——操作员需要知道这一次加粉到底停在哪。
         """
         deadline = time.monotonic() + self.SETTLE_TIMEOUT_S
         earliest = time.monotonic() + self.SETTLE_MIN_STABLE_S
@@ -3727,7 +4372,7 @@ class DispenseRunner:
             # ★ 2026-10-26（用户："沉降门的时候不更新质量"）：收尾称重同样是"振动停了、
             # 粉还在落"，旧版这里只读秤不记数，页面质量在最后 2~4s 冻住，操作员看到
             # 的终值和落盘终值不是一回事。现在每拍都刷新页面/曲线/CSV（learn=False，
-            # 不拿去更新起振门槛与 τ）。
+            # 不拿去更新 τ）。
             mass_now = float(history[-1]) - float(baseline)
             self._record(time.monotonic() - self._t0, mass_now, 0.0, "settle",
                          learn=False)
@@ -3753,8 +4398,8 @@ class DispenseRunner:
 
         ``learn=False``（2026-10-26 加）：**只显示、不参与"落料阶跃"学习**。
         沉降门/收尾称重/缓补等落定这几个场景振动已经关了，秤还在涨是余料在往下走，
-        不是"这个振幅落得下粉"的证据——拿去更新起振门槛（``_amp_threshold_est``）
-        和纯滞后 ``_tau_est`` 只会把模型带偏。所以这几处传 learn=False：
+        不是"这个振幅落得下粉"的证据——拿去更新纯滞后 ``_tau_est`` 只会把模型带偏
+        （起振门槛学习已于 2026-10-27 11:44 整体删除）。所以这几处传 learn=False：
         质量照样实时刷新、CSV 照样留痕，只是不喂给学习器。
         """
         with self._lock:
@@ -3763,7 +4408,7 @@ class DispenseRunner:
             # 逐拍 CSV：每个采样一行，带振幅环当时的全部决策现场（见 _csv_tick）
             self._csv_tick(elapsed, mass, rate, stage)
             # 质量历史给振幅环做回归：只留最近 20s（最长窗口 10s + 响应等待 6s 够用），
-            # 不清理的话 20 分钟的一炉会攒上万点，每轮回归都要遍历一遍。
+            # 不清理的话 20 分钟的一次加粉会攒上万点，每轮回归都要遍历一遍。
             self._mass_hist.append((float(elapsed), float(mass)))
             if len(self._mass_hist) > 400:
                 self._mass_hist = self._mass_hist[-250:]
@@ -3775,7 +4420,10 @@ class DispenseRunner:
                 "stage_text": STAGE_TEXT.get(stage, stage),
                 "stir_rpm": round(self._applied_stir, 1),
                 "rod_units": int(self._applied_window),
-                "amp_vpp": round(self._applied_amp, 2),
+                # 输出关着就报 0.00：切段沉降/收尾称重期间料还在往下走，但**振动是停的**。
+                # 以前这里照抄 `_applied_amp`，页面在沉降那 5–9s 里一直显示"振幅 2.88V"，
+                # 看上去就像"切段后还在按上一段的幅度振"（2026-10-29 16:40 用户的原话）。
+                "amp_vpp": round(self._applied_amp, 2) if self._vib_running else 0.0,
                 "duty_pct": round(self._applied_duty / 100.0, 1),
                 "remaining_mg": round(self._config["target_mg"] - mass, 1),
             }
@@ -3799,12 +4447,11 @@ class DispenseRunner:
                 self._period_est = round(
                     (1 - AMP_TAU_EMA) * self._period_est + AMP_TAU_EMA * gap, 2)
         self._last_drop_s = now
-        # 门槛记忆：这个振幅落得下粉（若它比已记门槛低）
-        amp = float(self._applied_amp)
-        if self._amp_threshold_est is None or amp < self._amp_threshold_est - 0.01:
-            self._amp_threshold_est = amp
-        elif abs(amp - self._amp_threshold_est) <= 0.01:
-            self._amp_threshold_est = amp     # 同一档反复确认，保持
+        # 门槛学习已删除（2026-10-27 11:44 用户："不需要记忆这个阶跃触发了门槛学习"）。
+        # 旧逻辑会把"这一次落料时的振幅"记成起振门槛，可落料常常是踢脚脉冲
+        # （+1.0~1.5V）震下来的、或者余料塌下来的——记下来的门槛比真实门槛高
+        # 一大截，之后又被拿去抬工作振幅，形成"踢过一次就再也下不来"。
+        # 现在这个粉需要多高电压，只认页面「振幅 Vpp」那一行。
         # τ 估计：把"未关联的振幅写入"和这次落料配对（最早的先配）
         while self._amp_write_marks:
             t_write, amp_at = self._amp_write_marks.pop(0)
@@ -3831,7 +4478,7 @@ class DispenseRunner:
         """往 runs/dispense_<stamp>_<target>mg_<粉>_samples.csv 追加一行逐拍现场。
 
         首拍惰性建文件、每拍 flush——中途断电/强杀也留得住前面全部数据
-        （2026-10-22 17:40 那炉就是例子：操作员 23s 手停，光靠 5s 心跳
+        （2026-10-22 17:40 那次加粉就是例子：操作员 23s 手停，光靠 5s 心跳
         复盘不出振幅环每一拍在干什么）。任何落盘异常只记一条日志，
         绝不影响加粉控制本身。
         """
@@ -3849,7 +4496,9 @@ class DispenseRunner:
             writer.writerow([
                 round(elapsed, 3), round(mass, 1), round(rate, 2), stage,
                 round(self._amp_cmd, 2),
-                round(self._applied_amp, 2),
+                # 实发幅度：输出关着（切段沉降/收尾/缓补间隙）记 0.00，
+                # 别把"设定值"当"正在振的幅度"——复盘时这两者混淆会得出错误结论。
+                round(self._applied_amp, 2) if self._vib_running else 0.0,
                 round(self._amp_band[0], 2), round(self._amp_band[1], 2),
                 1 if kick else 0, self._kick_count,
                 round(float(kick["amp"]), 2) if kick else "",
@@ -3877,7 +4526,7 @@ class DispenseRunner:
 
     def _save_run(self, result: dict) -> None:
         """落盘：每次加粉一个 JSON，便于事后复盘（老系统也是这个习惯）。"""
-        # 先收逐拍 CSV：无论这炉怎么结束，文件都要完整关闭并把路径报出来
+        # 先收逐拍 CSV：无论这一次加粉怎么结束，文件都要完整关闭并把路径报出来
         if self._samples_csv is not None:
             try:
                 self._samples_csv.flush()
