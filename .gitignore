@@ -33,3 +33,9 @@ Thumbs.db
 .git.bak/
 .pnpm-store/
 .git.bak/
+
+# 运行时产物：逐拍采样 CSV / 加粉记录（每次加粉都会新增，已在 runs/ 备份留档）
+server/src/powder_sampling_control/control_panel/runs/
+
+# 粉体库别名（junction -> server/data/powder_library，避免同一批档案被跟踪两遍）
+server/data/powder_library_alias/

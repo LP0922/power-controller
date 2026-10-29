@@ -477,6 +477,8 @@ class RateCalibrationRunner:
         现场就是"时间到了没停"。现在 acc 用 STIR_STOP_ACC（=200）的减速曲线，
         常规路径就是**减速停**；只有停止命令本身失败（串口/参数）才降级立即停，
         那是保底，不是常规动作。
+        ‼️ 例外（2026-10-27 用户要求）：转速 < 50 RPM 时 `stir_stop` 自动改成立即停，
+        低速工作点（如失水剂1 的 20 RPM）不再走减速曲线。
         """
         self._ensure_vibration_off()
         try:
@@ -486,8 +488,9 @@ class RateCalibrationRunner:
             self._stop_stir_immediate()
             return
         rpm = self.hub.stir_speed_rpm()
-        self._log(f"收尾完成：振动已关，搅拌按 acc={self.STIR_STOP_ACC} 减速停"
-                  + (f"（当前 {rpm:.0f} RPM，正在减速）" if rpm is not None else ""))
+        self._log(f"收尾完成：振动已关，搅拌已下发停止（acc={self.STIR_STOP_ACC} 减速；"
+                  f"转速 < {self.hub.STIR_STOP_IMMEDIATE_BELOW_RPM:.0f} RPM 时立即停）"
+                  + (f"，当前 {rpm:.0f} RPM" if rpm is not None else ""))
 
     def _stop_stir_immediate(self) -> bool:
         try:
@@ -534,6 +537,8 @@ class RateCalibrationRunner:
         这里只要求**指令同时下发**，不要求物理上同一毫秒静止：振动是断输出（瞬时），
         搅拌按 acc=200 减速（100 RPM 约 0.3 s、200 RPM 约 0.6 s），减速期间落下的粉
         本来也是这一点出的粉，留在称重结果里是对的。
+        ‼️ 转速 < 50 RPM（20 RPM 这类低速工作点）时 `stir_stop` 会**自动改成立即停**
+        （2026-10-27 用户要求）：低速没多少惯性，减速那几百毫秒只会让粉继续落。
         """
         t0 = time.monotonic()
         self._ensure_vibration_off()
@@ -544,8 +549,9 @@ class RateCalibrationRunner:
             self._log(f"停搅拌失败（{error}），改立即停")
             stir_ok = self._stop_stir_immediate()
         gap_ms = (time.monotonic() - t0) * 1000.0
-        self._log(f"停振 + 搅拌减速停（acc={self.STIR_STOP_ACC}，"
-                  f"两条指令间隔 {gap_ms:.0f} ms{'' if stir_ok else '，已降级立即停'}）")
+        self._log(f"停振 + 搅拌停止（acc={self.STIR_STOP_ACC} 减速；"
+                  f"转速 < {self.hub.STIR_STOP_IMMEDIATE_BELOW_RPM:.0f} RPM 时立即停），"
+                  f"两条指令间隔 {gap_ms:.0f} ms{'' if stir_ok else '，已降级立即停'}")
 
     # ------------------------------------------------------------------
     # 硬件小工具

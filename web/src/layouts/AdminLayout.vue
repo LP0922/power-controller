@@ -27,17 +27,14 @@
           <el-icon><List /></el-icon>
           <template #title>批量测试</template>
         </el-menu-item>
-        <el-menu-item index="/records">
-          <el-icon><Document /></el-icon>
-          <template #title>试验记录</template>
-        </el-menu-item>
         <el-menu-item index="/powders">
           <el-icon><Collection /></el-icon>
           <template #title>粉末管理</template>
         </el-menu-item>
-        <el-menu-item index="/experiments">
-          <el-icon><DataAnalysis /></el-icon>
-          <template #title>网格实验</template>
+        <!-- 试验记录的数据源是 runs/*.json，目前后端还没有列表接口，先置灰 -->
+        <el-menu-item index="/records" disabled title="试验记录依赖 runs 目录的列表接口，尚未接入">
+          <el-icon><Document /></el-icon>
+          <template #title>试验记录（待接入）</template>
         </el-menu-item>
       </el-menu>
     </el-aside>
@@ -66,8 +63,15 @@
           <el-tag :type="actuatorOnline ? 'success' : 'danger'" size="small" effect="dark">
             {{ actuatorOnline ? '执行器在线' : '执行器离线' }}
           </el-tag>
+          <el-tag v-if="store.manualLocked" type="warning" size="small" effect="dark">
+            {{ store.dispenseRunning ? '加粉运行中' : '标定运行中' }}
+          </el-tag>
           <span class="header-time">{{ currentTime }}</span>
-          <el-button :icon="Refresh" size="small" circle @click="handleRefresh" :loading="refreshing" />
+          <el-button :icon="Refresh" size="small" circle :loading="refreshing"
+            @click="handleRefresh" />
+          <el-button type="danger" size="small" :loading="estopping" @click="estop">
+            全部急停
+          </el-button>
         </div>
       </el-header>
 
@@ -82,39 +86,58 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { Monitor, SetUp, List, Document, Collection, DataAnalysis, Fold, Expand, Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { Monitor, SetUp, List, Document, Collection, Fold, Expand, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useDeviceStore } from '../stores/device.js'
+import { emergencyStop, errorMessage } from '../api/index.js'
 
 const route = useRoute()
 const store = useDeviceStore()
 const isCollapse = ref(false)
 const refreshing = ref(false)
+const estopping = ref(false)
 const currentTime = ref('')
 let clockTimer = null
 
 const activeMenu = computed(() => route.path)
 const currentTitle = computed(() => route.meta?.title || '')
-
-const balanceOnline = computed(() => !store.snapshotError && store.balance?.online)
-const actuatorOnline = computed(() => !store.snapshotError && store.actuator?.online)
+const balanceOnline = computed(() => !store.error && store.balanceOnline)
+const actuatorOnline = computed(() => !store.error && store.actuatorOnline)
 
 function updateClock() {
   const now = new Date()
   currentTime.value = now.toLocaleTimeString('zh-CN', { hour12: false })
 }
 
-function handleRefresh() {
+async function handleRefresh() {
   refreshing.value = true
-  store.fetchSnapshot().finally(() => {
-    refreshing.value = false
-    if (store.snapshotError) ElMessage.error(store.snapshotError)
-    else ElMessage.success('数据已刷新')
-  })
+  await store.fetchStatus()
+  refreshing.value = false
+  if (store.error) ElMessage.error(store.error)
+  else ElMessage.success('数据已刷新')
+}
+
+async function estop() {
+  try {
+    await ElMessageBox.confirm(
+      '全部急停：搅拌立即停 + 推杆急停 + 升降停止 + 振动关闭。\n确认执行？',
+      '全部急停', { type: 'warning' })
+  } catch { return }
+  estopping.value = true
+  try {
+    await emergencyStop()
+    ElMessage.success('全部急停已执行')
+    await store.fetchStatus()
+  } catch (error) {
+    ElMessage.error(errorMessage(error))
+  } finally {
+    estopping.value = false
+  }
 }
 
 onMounted(() => {
-  store.startPolling(200)
+  // 布局层起来就开始轮询：每个页面都依赖同一份设备状态，不重复开定时器
+  store.startPolling(500)
   updateClock()
   clockTimer = setInterval(updateClock, 1000)
 })
@@ -197,7 +220,7 @@ onUnmounted(() => {
 .header-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .header-time {
@@ -214,5 +237,3 @@ onUnmounted(() => {
   height: calc(100vh - 50px);
 }
 </style>
-
-

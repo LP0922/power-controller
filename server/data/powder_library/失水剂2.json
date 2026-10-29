@@ -3,7 +3,7 @@
   "powder_id": "water_loss_agent_2",
   "head_type": "gravity-cone-vibration",
   "created_at": "2026-08-17T11:03:26+08:00",
-  "updated_at": "2026-08-25T11:56:00+08:00",
+  "updated_at": "2026-10-27 14:16:04",
   "control_profile_status": "validated",
   "source_fingerprint_id": "powder-20260817-110326-9f48b6",
   "probe_40hz": {
@@ -63,16 +63,40 @@
     "batch_id": "disp-batch-1sets-20260824_182750-85b467",
     "algorithm_version": "predictive-stop-v2",
     "legacy_settle_confirmations": 3,
-    "final_masses_mg": [1004.0, 1019.0, 1004.0],
-    "errors_mg": [4.0, 19.0, 4.0],
-    "post_stop_tail_masses_mg": [12.0, 30.0, 18.0],
-    "offline_candidate_proxy_masses_mg": [1004.0, 1007.0, 1004.0]
+    "final_masses_mg": [
+      1004.0,
+      1019.0,
+      1004.0
+    ],
+    "errors_mg": [
+      4.0,
+      19.0,
+      4.0
+    ],
+    "post_stop_tail_masses_mg": [
+      12.0,
+      30.0,
+      18.0
+    ],
+    "offline_candidate_proxy_masses_mg": [
+      1004.0,
+      1007.0,
+      1004.0
+    ]
   },
   "safety_validation_20260825": {
     "batch_id": "disp-batch-1sets-20260825_094634-16e371",
     "algorithm_version": "predictive-stop-v3-water-loss-agent-2-fast-tail",
-    "final_masses_mg": [986.0, 1010.0, 1004.0],
-    "errors_mg": [-14.0, 10.0, 4.0],
+    "final_masses_mg": [
+      986.0,
+      1010.0,
+      1004.0
+    ],
+    "errors_mg": [
+      -14.0,
+      10.0,
+      4.0
+    ],
     "acceptance_pass_count": 2,
     "acceptance_total_count": 3,
     "conclusion": "disable fast single-confirmation stopping and repeat the three-run safety validation"
@@ -80,13 +104,33 @@
   "two_confirmation_validation_20260825": {
     "batch_id": "disp-batch-1sets-20260825_101525-7347b1",
     "algorithm_version": "predictive-stop-v3-water-loss-agent-2-fast-tail",
-    "final_masses_mg": [988.0, 987.0, 992.0],
-    "errors_mg": [-12.0, -13.0, -8.0],
+    "final_masses_mg": [
+      988.0,
+      987.0,
+      992.0
+    ],
+    "errors_mg": [
+      -12.0,
+      -13.0,
+      -8.0
+    ],
     "acceptance_pass_count": 1,
     "acceptance_total_count": 3,
-    "stop_confirmation_samples": [2, 2, 2],
-    "estimated_tail_masses_mg": [13.821, 17.799, 11.078],
-    "actual_tail_masses_mg": [0.0, 0.0, 4.0],
+    "stop_confirmation_samples": [
+      2,
+      2,
+      2
+    ],
+    "estimated_tail_masses_mg": [
+      13.821,
+      17.799,
+      11.078
+    ],
+    "actual_tail_masses_mg": [
+      0.0,
+      0.0,
+      4.0
+    ],
     "conclusion": "two confirmations improved repeatability, but the 5 mg fixed tail compensation caused a consistent underweight bias; reduce it to 0 mg and repeat the three-run safety validation"
   },
   "stall_recovery_single_validation_20260825": {
@@ -106,13 +150,33 @@
   "stall_recovery_batch_validation_20260825": {
     "batch_id": "disp-batch-1sets-20260825_110323-c97ab2",
     "algorithm_version": "predictive-stop-v4-water-loss-agent-2-stall-recovery",
-    "final_masses_mg": [1011.0, 996.0, 1022.0],
-    "errors_mg": [11.0, -4.0, 22.0],
+    "final_masses_mg": [
+      1011.0,
+      996.0,
+      1022.0
+    ],
+    "errors_mg": [
+      11.0,
+      -4.0,
+      22.0
+    ],
     "acceptance_pass_count": 1,
     "acceptance_total_count": 3,
-    "stall_recovery_attempts": [0, 0, 0],
-    "maximum_duty_permyriad": [2750, 2500, 3450],
-    "actual_tail_masses_mg": [31.0, 6.0, 26.0],
+    "stall_recovery_attempts": [
+      0,
+      0,
+      0
+    ],
+    "maximum_duty_permyriad": [
+      2750,
+      2500,
+      3450
+    ],
+    "actual_tail_masses_mg": [
+      31.0,
+      6.0,
+      26.0
+    ],
     "conclusion": "temporary-window recovery did not trigger; the third run accumulated duty to 34.5% during low flow and then surged, so enable flow hold, cap duty at 30%, and lower maximum flow to 30 mg/s"
   },
   "stall_recovery_counter_bug_validation_20260825": {
@@ -121,7 +185,10 @@
     "final_mass_mg": 691.0,
     "error_mg": -309.0,
     "actual_duration_s": 92.079,
-    "successful_recovery_masses_mg": [403.0, 445.0],
+    "successful_recovery_masses_mg": [
+      403.0,
+      445.0
+    ],
     "premature_stop_mass_mg": 691.0,
     "stop_reason": "stall recovery exhausted after 2 temporary-window attempts",
     "root_cause": "successful recoveries consumed a global attempt counter, so a later independent stall was stopped without receiving its own recovery attempts",
@@ -133,9 +200,21 @@
     "final_mass_mg": 992.0,
     "error_mg": -8.0,
     "actual_duration_s": 148.062,
-    "stall_detection_masses_mg": [61.0, 906.0, 944.0],
-    "stall_recovery_attempts": [1, 1, 1],
-    "recovery_masses_mg": [66.0, 910.0, 949.0],
+    "stall_detection_masses_mg": [
+      61.0,
+      906.0,
+      944.0
+    ],
+    "stall_recovery_attempts": [
+      1,
+      1,
+      1
+    ],
+    "recovery_masses_mg": [
+      66.0,
+      910.0,
+      949.0
+    ],
     "maximum_duty_permyriad": 2500,
     "maximum_control_rate_mg_s": 28.352,
     "stop_mass_mg": 992.0,
@@ -146,41 +225,328 @@
   "stall_recovery_counter_fix_batch_validation_20260825": {
     "batch_id": "disp-batch-1sets-20260825_113107-6b4acb",
     "algorithm_version": "predictive-stop-v4-water-loss-agent-2-stall-recovery",
-    "final_masses_mg": [1004.0, 1004.0, 1002.0],
-    "errors_mg": [4.0, 4.0, 2.0],
+    "final_masses_mg": [
+      1004.0,
+      1004.0,
+      1002.0
+    ],
+    "errors_mg": [
+      4.0,
+      4.0,
+      2.0
+    ],
     "acceptance_pass_count": 3,
     "acceptance_total_count": 3,
     "average_final_mass_mg": 1003.333,
     "range_mg": 2.0,
-    "actual_durations_s": [114.047, 82.328, 78.453],
-    "stall_recovery_counts": [1, 3, 3],
-    "successful_recovery_counts": [1, 3, 3],
-    "maximum_duty_permyriad": [2400, 2200, 2200],
-    "maximum_control_rate_mg_s": [26.734, 38.152, 50.974],
-    "stop_masses_mg": [992.0, 983.0, 991.0],
-    "actual_tail_masses_mg": [12.0, 21.0, 11.0],
-    "cleanup_window_positions_units": [351, 346, 349],
+    "actual_durations_s": [
+      114.047,
+      82.328,
+      78.453
+    ],
+    "stall_recovery_counts": [
+      1,
+      3,
+      3
+    ],
+    "successful_recovery_counts": [
+      1,
+      3,
+      3
+    ],
+    "maximum_duty_permyriad": [
+      2400,
+      2200,
+      2200
+    ],
+    "maximum_control_rate_mg_s": [
+      26.734,
+      38.152,
+      50.974
+    ],
+    "stop_masses_mg": [
+      992.0,
+      983.0,
+      991.0
+    ],
+    "actual_tail_masses_mg": [
+      12.0,
+      21.0,
+      11.0
+    ],
+    "cleanup_window_positions_units": [
+      351,
+      346,
+      349
+    ],
     "conclusion": "all three runs passed with a 2 mg range and all seven independent stalls recovered at attempt 1; keep the current parameters unchanged and proceed to a seven-run formal validation before marking the profile validated"
   },
   "formal_seven_run_validation_20260825": {
     "batch_id": "disp-batch-1sets-20260825_114157-3a382d",
     "algorithm_version": "predictive-stop-v4-water-loss-agent-2-stall-recovery",
-    "final_masses_mg": [993.0, 998.0, 998.0, 999.0, 1007.0, 1011.0, 1000.0],
-    "errors_mg": [-7.0, -2.0, -2.0, -1.0, 7.0, 11.0, 0.0],
+    "final_masses_mg": [
+      993.0,
+      998.0,
+      998.0,
+      999.0,
+      1007.0,
+      1011.0,
+      1000.0
+    ],
+    "errors_mg": [
+      -7.0,
+      -2.0,
+      -2.0,
+      -1.0,
+      7.0,
+      11.0,
+      0.0
+    ],
     "strict_acceptance_pass_count": 6,
     "operator_acceptance_pass_count": 7,
     "acceptance_total_count": 7,
     "average_final_mass_mg": 1000.857,
     "range_mg": 18.0,
-    "actual_durations_s": [108.312, 122.968, 137.968, 107.593, 63.594, 49.86, 91.125],
-    "stall_recovery_counts": [1, 3, 4, 2, 1, 0, 1],
-    "successful_recovery_counts": [1, 3, 4, 2, 1, 0, 1],
-    "maximum_duty_permyriad": [2300, 2250, 2350, 2300, 2200, 2200, 2200],
-    "maximum_control_rate_mg_s": [29.465, 33.267, 26.028, 38.972, 41.854, 39.569, 43.653],
-    "stop_masses_mg": [985.0, 993.0, 991.0, 993.0, 975.0, 988.0, 991.0],
-    "actual_tail_masses_mg": [8.0, 5.0, 7.0, 6.0, 32.0, 23.0, 9.0],
-    "cleanup_window_positions_units": [348, 345, 345, 350, 348, 347, 348],
+    "actual_durations_s": [
+      108.312,
+      122.968,
+      137.968,
+      107.593,
+      63.594,
+      49.86,
+      91.125
+    ],
+    "stall_recovery_counts": [
+      1,
+      3,
+      4,
+      2,
+      1,
+      0,
+      1
+    ],
+    "successful_recovery_counts": [
+      1,
+      3,
+      4,
+      2,
+      1,
+      0,
+      1
+    ],
+    "maximum_duty_permyriad": [
+      2300,
+      2250,
+      2350,
+      2300,
+      2200,
+      2200,
+      2200
+    ],
+    "maximum_control_rate_mg_s": [
+      29.465,
+      33.267,
+      26.028,
+      38.972,
+      41.854,
+      39.569,
+      43.653
+    ],
+    "stop_masses_mg": [
+      985.0,
+      993.0,
+      991.0,
+      993.0,
+      975.0,
+      988.0,
+      991.0
+    ],
+    "actual_tail_masses_mg": [
+      8.0,
+      5.0,
+      7.0,
+      6.0,
+      32.0,
+      23.0,
+      9.0
+    ],
+    "cleanup_window_positions_units": [
+      348,
+      345,
+      345,
+      350,
+      348,
+      347,
+      348
+    ],
     "operator_approval_note": "1011 mg is accepted under the operator's previously stated acceptance rule; no control fault occurred in that run",
     "conclusion": "formal validation complete; keep the current parameters and mark the dedicated 1000 mg profile validated"
+  },
+  "feedforward_v2": {
+    "schema": 2,
+    "points": [
+      {
+        "stir_rpm": 50.0,
+        "rod_units": 480,
+        "rate_mg_s": 2.49,
+        "cv_pct": 21.0,
+        "delta_mg": 52.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 1.58,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 0.3
+        },
+        "at": "2026-10-27 11:54:08"
+      }
+    ],
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0,
+      "amplitude_vpp": 0.3
+    },
+    "updated_at": "2026-10-27 14:13:34",
+    "stage_stir_rpm": {
+      "coarse": 50.0,
+      "fine": 50.0,
+      "precision": 50.0
+    },
+    "summary": {
+      "rate_min_mg_s": 2.49,
+      "rate_max_mg_s": 2.49,
+      "cv_median_pct": 21.0,
+      "points": 1,
+      "stir_levels": [
+        50.0
+      ],
+      "rod_range": [
+        480,
+        480
+      ],
+      "signal": {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 0.3
+      },
+      "signals_used": [
+        {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 0.3,
+          "points": 1
+        }
+      ],
+      "signal_mixed": false,
+      "stir_gain_pct": 0.0
+    },
+    "signals_used": [
+      {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 0.3,
+        "points": 1
+      }
+    ],
+    "signal_mixed": false,
+    "correction": {
+      "factor": 1.305,
+      "samples": 1,
+      "last_sample": 1.8715,
+      "last_details": [
+        {
+          "stage": "coarse",
+          "stir_rpm": 50.0,
+          "rod_units": 480.0,
+          "predicted_mg_s": 2.49,
+          "actual_mg_s": 7.34,
+          "ratio": 2.948
+        },
+        {
+          "stage": "slow",
+          "stir_rpm": 50.0,
+          "rod_units": 480.0,
+          "predicted_mg_s": 2.49,
+          "actual_mg_s": 1.98,
+          "ratio": 0.795
+        }
+      ],
+      "at": "2026-10-27 14:13:34"
+    }
+  },
+  "settle_gain_v1": {
+    "coarse>slow": {
+      "gain_mg": 42.8,
+      "last_gain_mg": 32.0,
+      "samples": 8,
+      "updated_at": "2026-10-27 14:16:04"
+    },
+    "fast>coarse": {
+      "gain_mg": 43.1,
+      "last_gain_mg": 58.0,
+      "samples": 9,
+      "updated_at": "2026-10-27 14:16:04"
+    }
+  },
+  "stage_recipe_v1": {
+    "schema": 1,
+    "source": "页面「三阶段配方」录入（2026-10-27 13:57 用户截图重存），目标 2000mg 的一套完整工作点",
+    "target_mg": 2000,
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0
+    },
+    "calibration_amplitude_vpp": 0.3,
+    "settle_gate": {
+      "enabled": true,
+      "rate_ratio": 1.5
+    },
+    "estimated_s": 88.0,
+    "max_run_s": 253.6,
+    "stages": [
+      {
+        "stage": "fast",
+        "stage_text": "快加",
+        "stir_rpm": 100.0,
+        "rod_units": 480,
+        "amplitude_vpp": 2.0,
+        "rate_mg_s": 50.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1450,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "coarse",
+        "stage_text": "粗加",
+        "stir_rpm": 50.0,
+        "rod_units": 480,
+        "amplitude_vpp": 1.5,
+        "rate_mg_s": 20.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1850,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "slow",
+        "stage_text": "慢加",
+        "stir_rpm": 50.0,
+        "rod_units": 480,
+        "amplitude_vpp": 0.3,
+        "rate_mg_s": 5.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 2000,
+        "settle_wait_s": null
+      }
+    ],
+    "notes": [
+      "快加搅拌 100 RPM、粗加/慢加 50 RPM，推杆三行都是 480（= feedforward_v2 唯一标定点 50rpm/480 的开度）。",
+      "快加目标速率 50 mg/s（用户 2026-10-27 13:57 明确要求按 50 保存）；粗加 20、慢加 5。这三个是闭环追的靶子，实际靠振幅在基准 ±0.5V 内加减达成，不是验收依据。",
+      "慢加振幅 0.30V = 标定振幅（同一工况，该点实测约 2.49mg/s）；快加 2.00V、粗加 1.50V 是操作者自定工作点，作用是把三段的起振与速率分开控制。",
+      "切点 1450/1850/2000 = 目标 2000mg 的分段（由页面「加料 mg」列提交，后端不现算）。",
+      "沉降门：按段 1.5×，等待上限 8s。缓补关闭时收尾偏轻仍按慢加行振幅定幅补差（0.40s/发）。"
+    ],
+    "updated_at": "2026-10-27 13:58:11"
   }
 }

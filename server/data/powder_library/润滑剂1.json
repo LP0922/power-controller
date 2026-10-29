@@ -665,12 +665,29 @@
       "dispense-1000mg-20260826_120719-43a1e3"
     ],
     "source_initial_parameters": [
-      {"frequency_hz": 80, "duty_permyriad": 2200, "window_position_units": 500},
-      {"frequency_hz": 80, "duty_permyriad": 2200, "window_position_units": 550}
+      {
+        "frequency_hz": 80,
+        "duty_permyriad": 2200,
+        "window_position_units": 500
+      },
+      {
+        "frequency_hz": 80,
+        "duty_permyriad": 2200,
+        "window_position_units": 550
+      }
     ],
-    "source_durations_s": [83.781, 35.485],
-    "source_last_sample_mass_mg": [332.0, 154.0],
-    "source_result": ["cancelled", "cancelled"],
+    "source_durations_s": [
+      83.781,
+      35.485
+    ],
+    "source_last_sample_mass_mg": [
+      332.0,
+      154.0
+    ],
+    "source_result": [
+      "cancelled",
+      "cancelled"
+    ],
     "warning_run_id": "dispense-1000mg-20260826_120155-0e2274",
     "warning_error": "hard overweight boundary exceeded: 2115.0 mg",
     "warning_final_mass_mg": null,
@@ -681,11 +698,221 @@
       "statement": "是的，当时手压到了",
       "classification": "operator_confirmed_external_pressure_interference",
       "quantitative_evaluation_eligible": false,
-      "exclude_from": ["accuracy_acceptance", "final_mass_statistics", "flow_model_fitting", "tail_compensation_fitting"],
+      "exclude_from": [
+        "accuracy_acceptance",
+        "final_mass_statistics",
+        "flow_model_fitting",
+        "tail_compensation_fitting"
+      ],
       "original_log_preserved": true,
       "original_log_sha256": "22831D2DA04085197823334AB5EDD3CB048CB3611B77A3EBCF21B570892FB765"
     },
     "unchanged": "Initial preset, frequency, window settings, tail settings, stage rates, duty step sizes, all window-control enable flags, common controller code and other powders are unchanged.",
     "physical_testing_performed": false
+  },
+  "feedforward_v2": {
+    "schema": 2,
+    "points": [
+      {
+        "stir_rpm": 100.0,
+        "rod_units": 680,
+        "rate_mg_s": 6.68,
+        "cv_pct": 39.9,
+        "delta_mg": 129.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 2.39,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.3
+        },
+        "at": "2026-10-22 11:45:56"
+      },
+      {
+        "stir_rpm": 200.0,
+        "rod_units": 700,
+        "rate_mg_s": 26.87,
+        "cv_pct": 48.2,
+        "delta_mg": 618.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 1.03,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 3.0
+        },
+        "at": "2026-10-23 13:54:20"
+      }
+    ],
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0,
+      "amplitude_vpp": 3.0
+    },
+    "updated_at": "2026-10-28 11:39:20",
+    "signals_used": [
+      {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 2.3,
+        "points": 1
+      },
+      {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 3.0,
+        "points": 1
+      }
+    ],
+    "signal_mixed": true,
+    "stage_stir_rpm": {
+      "coarse": 100.0,
+      "fine": 100.0,
+      "precision": 100.0
+    },
+    "summary": {
+      "rate_min_mg_s": 6.68,
+      "rate_max_mg_s": 26.87,
+      "cv_median_pct": 44.0,
+      "points": 2,
+      "stir_levels": [
+        100.0,
+        200.0
+      ],
+      "rod_range": [
+        680,
+        700
+      ],
+      "signal": {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 3.0
+      },
+      "signals_used": [
+        {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.3,
+          "points": 1
+        },
+        {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 3.0,
+          "points": 1
+        }
+      ],
+      "signal_mixed": true,
+      "stir_gain_pct": 302.2
+    },
+    "correction": {
+      "factor": 1.3678,
+      "samples": 43,
+      "last_sample": 0.6759,
+      "last_details": [
+        {
+          "stage": "coarse",
+          "stir_rpm": 75.0,
+          "rod_units": 750.0,
+          "predicted_mg_s": 6.68,
+          "actual_mg_s": 6.94,
+          "ratio": 1.039
+        },
+        {
+          "stage": "slow",
+          "stir_rpm": 50.0,
+          "rod_units": 750.0,
+          "predicted_mg_s": 6.68,
+          "actual_mg_s": 2.09,
+          "ratio": 0.313
+        }
+      ],
+      "at": "2026-10-28 11:39:20"
+    }
+  },
+  "updated_at": "2026-10-28 11:39:20",
+  "settle_gain_v1": {
+    "coarse>slow": {
+      "gain_mg": 50.0,
+      "last_gain_mg": 61.0,
+      "samples": 19,
+      "updated_at": "2026-10-28 11:30:41"
+    },
+    "fast>coarse": {
+      "gain_mg": 50.0,
+      "last_gain_mg": 317.0,
+      "samples": 16,
+      "updated_at": "2026-10-28 11:28:12"
+    }
+  },
+  "stage_recipe_v1": {
+    "schema": 1,
+    "source": "页面「三阶段配方」录入（2026-10-27 17:55 用户截图，润滑剂1 的默认配置）",
+    "target_mg": 2000,
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0
+    },
+    "calibration_amplitude_vpp": 3.0,
+    "settle_gate": {
+      "enabled": true,
+      "rate_ratio": 1.5
+    },
+    "estimated_s": 105.0,
+    "max_run_s": 291.0,
+    "stages": [
+      {
+        "stage": "fast",
+        "stage_text": "快加",
+        "enabled": true,
+        "stir_rpm": 100.0,
+        "rod_units": 750,
+        "amplitude_vpp": 3.0,
+        "rate_mg_s": 30.9,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1457.6,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "coarse",
+        "stage_text": "粗加",
+        "enabled": true,
+        "stir_rpm": 75.0,
+        "rod_units": 750,
+        "amplitude_vpp": 2.5,
+        "rate_mg_s": 20.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1850.0,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "slow",
+        "stage_text": "慢加",
+        "enabled": true,
+        "stir_rpm": 50.0,
+        "rod_units": 750,
+        "amplitude_vpp": 2.0,
+        "rate_mg_s": 5.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": null,
+        "settle_wait_s": null
+      }
+    ],
+    "notes": [
+      "三段搅拌 100 / 75 / 50 RPM，推杆统一 750（页面手填值；该粉标定点是100rpm/680/2.3V≈6.68mg·s⁻¹ 与 200rpm/700/3.0V≈26.87mg·s⁻¹ 两个）。",
+      "快加目标速率 30.9 mg/s = 该粉最强标定点 26.87 × 1.15（AMP_RATE_CAP_RATIO），是机器在该工作点能给的上限；操作者填更高的靶子也会被钳到这个值。",
+      "振幅 3.00 / 2.50 / 2.00 Vpp 是操作者自定工作点，闭环在各自基准 ±0.5V 内加减。",
+      "切点 1457.6 / 1850（目标 2000mg 的分段）；后端会再减去学到的切段惯性落料量（fast>coarse、coarse>slow），截图当次实际执行的是 1415.2 / 1800。",
+      "慢加那格「加到 mg」留空（后端校验切点必须 < 目标，填 2000 会被拒）。截图里慢加行的「启用」框没勾，但后端对慢加恒定强制启用（enabled['slow']=True），档案按三段都启用记录。",
+      "预估 105.0s；超时上限 291.0s。",
+      "沉降门：开，门槛按段 = 本段规定速率 ×1.5，等待上限 8s。",
+      "缓补关闭时收尾偏轻仍按慢加行振幅定幅补差（0.40s/发）。",
+      "该粉标定最强点 26.87 mg/s（200.0rpm / 杆 700 / 3.0V）。"
+    ],
+    "updated_at": "2026-10-27 17:57:06"
   }
 }

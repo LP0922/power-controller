@@ -29,7 +29,7 @@ import powder_sampling_control.control_panel.dispense_runner as dr  # noqa: E402
 
 
 class FakeClock:
-    """虚拟时钟：sleep 只是把时间往前推，整炉几十秒的仿真瞬间跑完。"""
+    """虚拟时钟：sleep 只是把时间往前推，整次加粉几十秒的仿真瞬间跑完。"""
 
     def __init__(self) -> None:
         self.now = 1000.0
@@ -105,7 +105,7 @@ class FakeHub:
     """假机构：天平按"振幅 → 速率"的物理模型累加质量，带 1.5s 纯滞后。
 
     ``STIR_LEAK_MG_S_PER_100RPM``：振动关着、搅拌还在转时的"漏料"（mg/s @100RPM）。
-    这是 2026-10-23 11:09 那炉实测出来的现象——润滑剂1 在杆 680/搅 100 下，
+    这是 2026-10-23 11:09 那次加粉实测出来的现象——润滑剂1 在杆 680/搅 100 下，
     振动一关粉照样以 ≈5mg/s 塌下来（腔里堆的料被搅拌推出去），缓补"关振等落定"
     永远等不到稳。默认 0 = 关振就断料（封堵剂1 那种），要复现润滑剂1 就传 0.05。
     """
@@ -119,11 +119,11 @@ class FakeHub:
     STIR_LEAK_MG_S_PER_100RPM = 0.0
     STIR_COAST_S = 10.0  # 搅拌停转后余料还会继续落多久（线性衰减到 0）
     STIR_SPINUP_S = 0.0  # 起搅拌后多久才真正把腔口粉层推到落料口（0=不模拟）
-    # 第几发缓补脉冲"放量"（模拟腔里塌料：1200mg 那炉 3.10V 先 +12mg 再 +38mg）
+    # 第几发缓补脉冲"放量"（模拟腔里塌料：1200mg 那次加粉 3.10V 先 +12mg 再 +38mg）
     TRIM_SURGE_AT = 0
     TRIM_SURGE_MULT = 1.0
     # ★ 起振塌料（2026-10-26 11:30 现场）：料口上方堆着的粉在**第一次开振动**的
-    # 0.5s 内一次性塌下来。11:30:25 那炉 0→110mg 只用 0.5s（207mg/s），缓补一发
+    # 0.5s 内一次性塌下来。11:30:25 那次加粉 0→110mg 只用 0.5s（207mg/s），缓补一发
     # 都没发出去就 279mg。`--start-surge 110` 复现它。
     START_SURGE_MG = 0.0
     SURGE_WINDOW_S = 0.5
@@ -174,7 +174,7 @@ class FakeHub:
     def _flow_ready(self, now: float) -> bool:
         """搅拌刚起转的前 STIR_SPINUP_S 秒里，腔口的粉还没被推到位 → 振动也白振。
 
-        复现 2026-10-23 11:23 那炉：0.15~0.22s 的猝发永远 +0mg，0.6s 的能出 5~6mg。
+        复现 2026-10-23 11:23 那次加粉：0.15~0.22s 的猝发永远 +0mg，0.6s 的能出 5~6mg。
         """
         if self.STIR_SPINUP_S <= 0.0:
             return True
@@ -234,7 +234,7 @@ class FakeHub:
             rate = self.leak * self.stir / 100.0     # 振动关、搅拌转：塌料
         elif self._stir_stop_t is not None:
             # 搅拌停转后的惯性余料：STIR_COAST_S 内线性衰减到 0。
-            # 10-23 那炉判停 170mg 后还在落（收尾 233），就是这部分没被算进去。
+            # 10-23 那次加粉判停 170mg 后还在落（收尾 233），就是这部分没被算进去。
             left = self.STIR_COAST_S - (now - self._stir_stop_t)
             if left <= 0:
                 return
@@ -318,14 +318,14 @@ def main() -> int:
                     help="假机构增益 mg/s per V（默认 14.0 = 稳定 3.0V 约 20mg/s，"
                          "2026-10-23 11:56 用户实测口径）")
     ap.add_argument("--trim-surge", default=None, metavar="N:MULT",
-                    help="第 N 发缓补脉冲放量 MULT 倍（模拟腔里塌料：1200mg 那炉 "
+                    help="第 N 发缓补脉冲放量 MULT 倍（模拟腔里塌料：1200mg 那次加粉 "
                          "3.10V 先 +12mg 再 +38mg），例：--trim-surge 3:3")
     ap.add_argument("--start-surge", type=float, default=None, metavar="MG",
                     help="起振 0.5s 内一次性塌落 MG 粉（复现 11:30 那几次 200mg 超重）")
     ap.add_argument("--surge-ratio", type=float, default=None,
                     help="段内超速熔断倍率（0 = 关，用来看关掉会怎样）")
     ap.add_argument("--keep-csv", action="store_true", help="保留逐拍 CSV")
-    ap.add_argument("--show-log", action="store_true", help="打印整炉日志（排查判停/缓补用）")
+    ap.add_argument("--show-log", action="store_true", help="打印整次加粉日志（排查判停/缓补用）")
     ap.add_argument("--timeout", type=float, default=120.0)
     args = ap.parse_args()
 

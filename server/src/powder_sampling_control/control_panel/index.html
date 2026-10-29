@@ -249,7 +249,7 @@
       <input type="checkbox" class="s-en" data-stage="fast" checked>
       <input type="number" class="s-stir" data-stage="fast" min="0" max="1500" step="10" style="width:100%">
       <input type="number" class="s-rod" data-stage="fast" min="20" max="1200" step="5" style="width:100%">
-      <input type="number" class="s-amp" data-stage="fast" min="1" max="4" step="0.05" style="width:100%" value="3" placeholder="自动" title="快加默认 3.0Vpp；闭环在 2.5–3.5V 内按速率加减。留空 = 后端默认 3.0">
+      <input type="number" class="s-amp" data-stage="fast" min="0.01" max="4" step="0.05" style="width:100%" value="3" placeholder="自动" title="快加默认 3.0Vpp；闭环在 2.5–3.5V 内按速率加减。留空 = 后端默认 3.0">
       <input type="number" class="s-rate" data-stage="fast" min="0.1" max="300" step="0.1" style="width:100%" placeholder="75" title="留空 = 默认 75 mg/s（按它从标定表挑工作点：转速和推杆开度都照抄那一点，推杆整段锁死）">
       <input type="number" class="s-duty" data-stage="fast" min="5" max="50" step="1" style="width:100%">
       <input type="number" class="s-switch" data-stage="fast" min="1" step="1" style="width:100%" placeholder="—">
@@ -259,7 +259,7 @@
       <input type="checkbox" class="s-en" data-stage="coarse" checked>
       <input type="number" class="s-stir" data-stage="coarse" min="0" max="1500" step="10" style="width:100%">
       <input type="number" class="s-rod" data-stage="coarse" min="20" max="1200" step="5" style="width:100%">
-      <input type="number" class="s-amp" data-stage="coarse" min="1" max="4" step="0.05" style="width:100%" value="2.5" placeholder="自动" title="粗加默认 2.5Vpp；闭环在 2.0–3.0V 内按速率加减。留空 = 后端默认 2.5">
+      <input type="number" class="s-amp" data-stage="coarse" min="0.01" max="4" step="0.05" style="width:100%" value="2.5" placeholder="自动" title="粗加默认 2.5Vpp；闭环在 2.0–3.0V 内按速率加减。留空 = 后端默认 2.5">
       <input type="number" class="s-rate" data-stage="coarse" min="0.1" max="300" step="0.1" style="width:100%" placeholder="20" title="留空 = 默认 20 mg/s">
       <input type="number" class="s-duty" data-stage="coarse" min="5" max="50" step="1" style="width:100%">
       <input type="number" class="s-switch" data-stage="coarse" min="1" step="1" style="width:100%" placeholder="—">
@@ -269,7 +269,7 @@
       <input type="checkbox" class="s-en" data-stage="slow" checked disabled title="收尾段，不可关闭">
       <input type="number" class="s-stir" data-stage="slow" min="0" max="1500" step="10" style="width:100%">
       <input type="number" class="s-rod" data-stage="slow" min="20" max="1200" step="5" style="width:100%">
-      <input type="number" class="s-amp" data-stage="slow" min="1" max="4" step="0.05" style="width:100%" value="2" placeholder="自动" title="慢加默认 2.0Vpp；整段锁这个值，只做恢复出料不追速率（卡粉才踢一脚）。留空 = 后端默认 2.0">
+      <input type="number" class="s-amp" data-stage="slow" min="0.01" max="4" step="0.05" style="width:100%" value="2" placeholder="自动" title="慢加默认 2.0Vpp；超速会往下收（最低 0.01V，设备下限），不出料才 +0.10V/次涓流，卡粉才踢一脚。留空 = 后端默认 2.0">
       <input type="number" class="s-rate" data-stage="slow" min="0.1" max="300" step="0.1" style="width:100%" placeholder="5" title="留空 = 默认 5 mg/s">
       <input type="number" class="s-duty" data-stage="slow" min="5" max="50" step="1" style="width:100%">
       <input type="number" class="s-switch" data-stage="slow" min="1" step="1" style="width:100%" placeholder="收尾">
@@ -464,7 +464,7 @@
       <button class="op" id="btnStirStopDecel">减速停止</button>
       <button class="op" id="btnStirStopImm">立即停止</button>
       <button class="op" id="btnStirClearStall">解除堵转保护</button>
-      <span class="tag">减速停 = 速度写 0 + 同一加速度曲线，acc 越小停越缓；堵转保护是锁存的，故障位消了也要点一次解除才接受新指令</span>
+      <span class="tag">减速停 = 速度写 0 + 同一加速度曲线，acc 越小停越缓（转速 < 50 RPM 时自动改成立即停）；堵转保护是锁存的，故障位消了也要点一次解除才接受新指令</span>
     </div>
     <div class="status-grid">
       <div class="stat"><div class="k">实时转速</div><div class="v" id="stirRpmNow">–</div></div>
@@ -842,7 +842,7 @@ function fillStages(plan) {
 }
 let dispPlanTimer = null;
 // 表里现在这套"加料"切点，是按哪个目标质量算出来的。
-// 2026-10-23 15:46 那炉踩的坑：目标从 2000 改成 3000，change 事件走 350ms 防抖去重算，
+// 2026-10-23 15:46 那次加粉踩的坑：目标从 2000 改成 3000，change 事件走 350ms 防抖去重算，
 // 用户紧接着就点了「开始加粉」——提交的还是 2000 那套切点（快加1450/粗加1812），
 // 结果 1812mg 就进慢加，剩下 1186mg 全用 5mg/s 慢慢补。点开始时必须核对这个值。
 let lastPlanFilledTarget = null;
@@ -912,7 +912,7 @@ $("dispPowder").addEventListener("change", () => scheduleDispPlan(true));
 $("dispCategory").addEventListener("change", () => scheduleDispPlan(true));
 $("btnDispStart").onclick = async () => {
   const target = parseInt($("dispTarget").value, 10);
-  // 目标改过、三阶段表还是上一炉的切点 → 先按新目标重算再提交。
+  // 目标改过、三阶段表还是上一次加粉的切点 → 先按新目标重算再提交。
   // （2026-10-23 15:46：2000→3000 没等重算就点开始，1812mg 就进慢加，剩 1186mg 全走 5mg/s）
   if (lastPlanFilledTarget !== target) {
     await refreshDispPlan(true);
@@ -926,7 +926,7 @@ $("btnDispStart").onclick = async () => {
   const powder = $("dispPowder").value;
   const stages = collectStages().filter(s => s.enabled);
   if (!stages.length) { log("三阶段至少要启用一段", "err"); return; }
-  // 慢加是收尾段，正常只该 5~15%。切点若还是上一炉的（或手填错），
+  // 慢加是收尾段，正常只该 5~15%。切点若还是上一次加粉的（或手填错），
   // 这里把"慢加要补多少"直接摊给操作员看，别等跑起来才发现要磨四分钟。
   const switches = stages
     .map(s => s.switch_mass_mg)
@@ -1682,7 +1682,7 @@ function renderDispense(d) {
 
   const target = (d.config && d.config.target_mg) || parseInt($("dispTarget").value, 10) || 100;
   // 净质量：运行中优先用闭环最后一帧（它同时带速率/振幅）；收尾(settling)与结束
-  // (done/aborted) 时主循环已经不再采数，改用后端每轮新读的天平计数减去本炉基线，
+  // (done/aborted) 时主循环已经不再采数，改用后端每轮新读的天平计数减去本次加粉基线，
   // 这样「当前质量」不会冻在 991 而实际已经沉到 1009。
   const net = (typeof d.net_mass_mg === "number") ? d.net_mass_mg : null;
   const liveMass = (live.mass_mg !== undefined) ? live.mass_mg : null;

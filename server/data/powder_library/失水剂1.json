@@ -1,0 +1,177 @@
+{
+  "powder_name": "失水剂1",
+  "powder_id": "失水剂1",
+  "head_type": "gravity-cone-vibration",
+  "created_at": "2026-10-21 15:16:15",
+  "updated_at": "2026-10-27 15:59:33",
+  "settle_gain_v1": {
+    "fast>coarse": {
+      "gain_mg": 50.0,
+      "last_gain_mg": 371.0,
+      "samples": 17,
+      "updated_at": "2026-10-27 15:59:33"
+    },
+    "coarse>slow": {
+      "gain_mg": 50.0,
+      "last_gain_mg": 406.0,
+      "samples": 15,
+      "updated_at": "2026-10-27 15:59:33"
+    }
+  },
+  "feedforward_v2": {
+    "schema": 2,
+    "points": [
+      {
+        "stir_rpm": 20.0,
+        "rod_units": 625,
+        "rate_mg_s": 3.57,
+        "cv_pct": 40.9,
+        "delta_mg": 104.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 0.51,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 1.0
+        },
+        "at": "2026-10-27 15:19:23"
+      }
+    ],
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0,
+      "amplitude_vpp": 1.0
+    },
+    "updated_at": "2026-10-27 15:34:08",
+    "signals_used": [
+      {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 1.0,
+        "points": 1
+      }
+    ],
+    "signal_mixed": false,
+    "stage_stir_rpm": {
+      "coarse": 20.0,
+      "fine": 20.0,
+      "precision": 20.0
+    },
+    "summary": {
+      "rate_min_mg_s": 3.57,
+      "rate_max_mg_s": 3.57,
+      "cv_median_pct": 40.9,
+      "points": 1,
+      "stir_levels": [
+        20.0
+      ],
+      "rod_range": [
+        625,
+        625
+      ],
+      "signal": {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 1.0
+      },
+      "signals_used": [
+        {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 1.0,
+          "points": 1
+        }
+      ],
+      "signal_mixed": false,
+      "stir_gain_pct": 0.0
+    },
+    "correction": {
+      "factor": 1.1103,
+      "samples": 1,
+      "last_sample": 1.3151,
+      "last_details": [
+        {
+          "stage": "coarse",
+          "stir_rpm": 20.0,
+          "rod_units": 625.0,
+          "predicted_mg_s": 3.57,
+          "actual_mg_s": 7.48,
+          "ratio": 2.095
+        },
+        {
+          "stage": "slow",
+          "stir_rpm": 20.0,
+          "rod_units": 625.0,
+          "predicted_mg_s": 3.57,
+          "actual_mg_s": 1.91,
+          "ratio": 0.535
+        }
+      ],
+      "at": "2026-10-27 15:34:08"
+    }
+  },
+  "stage_recipe_v1": {
+    "schema": 1,
+    "source": "页面「三阶段配方」录入（2026-10-27 15:38 用户截图，失水剂1 的默认参数）",
+    "target_mg": 2000,
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0
+    },
+    "calibration_amplitude_vpp": 1.0,
+    "settle_gate": {
+      "enabled": true,
+      "rate_ratio": 1.5
+    },
+    "estimated_s": 78.7,
+    "max_run_s": 233.1,
+    "stages": [
+      {
+        "stage": "fast",
+        "stage_text": "快加",
+        "enabled": true,
+        "stir_rpm": 20.0,
+        "rod_units": 625,
+        "amplitude_vpp": 2.5,
+        "rate_mg_s": 75.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1450,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "coarse",
+        "stage_text": "粗加",
+        "enabled": true,
+        "stir_rpm": 20.0,
+        "rod_units": 625,
+        "amplitude_vpp": 1.5,
+        "rate_mg_s": 20.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1850,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "slow",
+        "stage_text": "慢加",
+        "enabled": true,
+        "stir_rpm": 20.0,
+        "rod_units": 625,
+        "amplitude_vpp": 1.0,
+        "rate_mg_s": 5.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": null,
+        "settle_wait_s": null
+      }
+    ],
+    "notes": [
+      "三段搅拌都是 20 RPM、推杆都是 625（= 该粉唯一标定点 20rpm/625 的开度），标定点实测 1.0V 约 3.57mg/s。",
+      "快加 2.50V / 75mg·s⁻¹：振幅远高于标定振幅，靠它拉出大流量；粗加 1.50V / 20；慢加 1.00V / 5（= 标定振幅，该点约 3.57mg/s，够追 5mg/s 的靶子）。",
+      "切点 1450/1850 = 目标 2000mg 的分段（页面「加料 mg」列提交；后端会各扣 50mg 切段预留，实际计划切点 1400 / 1800）。慢加那格留空（后端校验 1–1999，填 2000 会被拒）。",
+      "预估 78.7s = 1400/75 + 400/20 + 200/5；超时上限 233.1s。",
+      "沉降门按段 1.5×，等待上限 8s；缓补关闭时收尾偏轻仍按慢加行振幅定幅补差（0.40s/发）。"
+    ],
+    "updated_at": "2026-10-27 15:38:41"
+  }
+}

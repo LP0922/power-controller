@@ -1,0 +1,268 @@
+{
+  "powder_name": "封堵剂1",
+  "powder_id": "封堵剂1",
+  "head_type": "gravity-cone-vibration",
+  "created_at": "2026-10-21 18:47:24",
+  "updated_at": "2026-10-29 10:09:32",
+  "feedforward_v2": {
+    "schema": 2,
+    "points": [
+      {
+        "stir_rpm": 200.0,
+        "rod_units": 650,
+        "rate_mg_s": 13.75,
+        "cv_pct": 56.9,
+        "delta_mg": 346.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 1.84,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.0
+        },
+        "at": "2026-10-21 18:48:45"
+      },
+      {
+        "stir_rpm": 100.0,
+        "rod_units": 650,
+        "rate_mg_s": 11.35,
+        "cv_pct": 48.4,
+        "delta_mg": 217.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 2.12,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.0
+        },
+        "at": "2026-10-21 18:49:37"
+      },
+      {
+        "stir_rpm": 200.0,
+        "rod_units": 700,
+        "rate_mg_s": 49.14,
+        "cv_pct": 21.5,
+        "delta_mg": 1067.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 2.38,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 3.0
+        },
+        "at": "2026-10-21 18:52:10"
+      },
+      {
+        "stir_rpm": 300.0,
+        "rod_units": 800,
+        "rate_mg_s": 14.52,
+        "cv_pct": 53.5,
+        "delta_mg": 279.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 1.58,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 0.01
+        },
+        "at": "2026-10-21 18:53:51"
+      },
+      {
+        "stir_rpm": 200.0,
+        "rod_units": 900,
+        "rate_mg_s": 15.6,
+        "cv_pct": 92.7,
+        "delta_mg": 222.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 2.11,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 0.01
+        },
+        "at": "2026-10-21 18:54:32"
+      },
+      {
+        "stir_rpm": 100.0,
+        "rod_units": 700,
+        "rate_mg_s": 22.71,
+        "cv_pct": 44.6,
+        "delta_mg": 433.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 1.84,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.0
+        },
+        "at": "2026-10-21 18:55:12"
+      },
+      {
+        "stir_rpm": 100.0,
+        "rod_units": 550,
+        "rate_mg_s": 2.05,
+        "cv_pct": 4.8,
+        "delta_mg": 74.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 1.31,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.0
+        },
+        "at": "2026-10-21 18:55:42"
+      },
+      {
+        "stir_rpm": 100.0,
+        "rod_units": 600,
+        "rate_mg_s": 2.11,
+        "cv_pct": 17.8,
+        "delta_mg": 37.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 2.66,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.0
+        },
+        "at": "2026-10-21 18:56:17"
+      }
+    ],
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0,
+      "amplitude_vpp": 2.0
+    },
+    "updated_at": "2026-10-29 10:09:32",
+    "signals_used": [
+      {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 0.01,
+        "points": 2
+      },
+      {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 2.0,
+        "points": 5
+      },
+      {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 3.0,
+        "points": 1
+      }
+    ],
+    "signal_mixed": true,
+    "stage_stir_rpm": {
+      "coarse": 100.0,
+      "fine": 100.0,
+      "precision": 100.0
+    },
+    "summary": {
+      "rate_min_mg_s": 2.05,
+      "rate_max_mg_s": 49.14,
+      "cv_median_pct": 46.5,
+      "points": 8,
+      "stir_levels": [
+        100.0,
+        200.0,
+        300.0
+      ],
+      "rod_range": [
+        550,
+        900
+      ],
+      "signal": {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 2.0
+      },
+      "signals_used": [
+        {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 0.01,
+          "points": 2
+        },
+        {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.0,
+          "points": 5
+        },
+        {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 3.0,
+          "points": 1
+        }
+      ],
+      "signal_mixed": true,
+      "stir_gain_pct": 630.2
+    },
+    "correction": {
+      "factor": 0.8707,
+      "samples": 31,
+      "last_sample": 0.6548,
+      "last_details": [
+        {
+          "stage": "fast",
+          "stir_rpm": 200.0,
+          "rod_units": 700.0,
+          "predicted_mg_s": 49.14,
+          "actual_mg_s": 30.68,
+          "ratio": 0.624
+        },
+        {
+          "stage": "coarse",
+          "stir_rpm": 100.0,
+          "rod_units": 700.0,
+          "predicted_mg_s": 22.71,
+          "actual_mg_s": 14.87,
+          "ratio": 0.655
+        },
+        {
+          "stage": "slow",
+          "stir_rpm": 100.0,
+          "rod_units": 600.0,
+          "predicted_mg_s": 2.11,
+          "actual_mg_s": 1.66,
+          "ratio": 0.787
+        }
+      ],
+      "at": "2026-10-29 10:09:32"
+    }
+  },
+  "settle_gain_v1": {
+    "fast>coarse": {
+      "gain_mg": 50.0,
+      "last_gain_mg": 93.0,
+      "samples": 4,
+      "updated_at": "2026-10-28 16:57:46"
+    },
+    "coarse>slow": {
+      "gain_mg": 43.2,
+      "last_gain_mg": 33.0,
+      "samples": 9,
+      "updated_at": "2026-10-29 09:51:36"
+    }
+  }
+}

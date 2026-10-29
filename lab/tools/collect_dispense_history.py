@@ -6,7 +6,7 @@
   - 中途手动取消（stop_reason 含"操作员停止"）单独列出；
   - 保护中止（超时保护/超重保护/天平失联/推杆未到位）也算没跑完，单独列出备查。
 
-也就是说：明细/汇总只统计"程序自己判断收得住、自己收的"那些炉次。
+也就是说：明细/汇总只统计"程序自己判断收得住、自己收的"那些加粉次数。
 
 用法：
     python lab/tools/collect_dispense_history.py            # 看统计
@@ -161,9 +161,9 @@ def main() -> int:
     print(f"记录总数 {len(done) + len(aborted) + len(cancelled) + len(excluded)}"
           f"，正常收尾 {len(done)}，保护中止 {len(aborted)}，中途取消 {len(cancelled)}"
           f"，仿真粉/未选粉已删 {len(excluded)}")
-    print(f"口径：只统计结束方式为「正常判停 / 缓补收尾」的炉次；"
+    print(f"口径：只统计结束方式为「正常判停 / 缓补收尾」的加粉次数；"
           f"仿真粉、未选粉（纯调试）已剔除")
-    print(f"正常收尾炉：合格 {s['合格']}（{s['合格率']:.0%}）、偏重 {s['偏重']}、偏轻 {s['偏轻']}")
+    print(f"正常收尾的加粉：合格 {s['合格']}（{s['合格率']:.0%}）、偏重 {s['偏重']}、偏轻 {s['偏轻']}")
     print(f"偏差：平均 {s['平均偏差']:+.1f} mg，平均绝对 {s['平均绝对偏差']:.1f} mg，"
           f"最大 {s['最大绝对偏差']:.1f} mg")
     print(f"用时：平均 {s['平均用时']:.1f}s，合计 {s['总用时'] / 60:.1f}min")
@@ -175,7 +175,7 @@ def main() -> int:
         by_day.setdefault(r["start"][:10], []).append(r)
     for day, rs in sorted(by_day.items()):
         d = summarize(rs)
-        print(f"  {day}  {d['n']:3d} 炉  合格 {d['合格']:2d}（{d['合格率']:.0%}）"
+        print(f"  {day}  {d['n']:3d} 次加粉  合格 {d['合格']:2d}（{d['合格率']:.0%}）"
               f"  平均|偏差| {d['平均绝对偏差']:.1f}mg  平均用时 {d['平均用时']:.0f}s")
 
     print("\n按目标量段：")
@@ -186,10 +186,10 @@ def main() -> int:
         if not rs:
             continue
         d = summarize(rs)
-        print(f"  {label:10s} {d['n']:3d} 炉  合格 {d['合格']:2d}（{d['合格率']:3.0%}）"
+        print(f"  {label:10s} {d['n']:3d} 次加粉  合格 {d['合格']:2d}（{d['合格率']:3.0%}）"
               f"  平均|偏差| {d['平均绝对偏差']:5.1f}mg  平均用时 {d['平均用时']:5.0f}s")
 
-    print(f"\n最近 {args.show} 炉（含判定）：")
+    print(f"\n最近 {args.show} 次（含判定）：")
     print(f"{'开始时间':16s} {'粉体':6s} {'目标':>6s} {'实得':>8s} {'偏差':>7s} "
           f"{'判定':4s} {'用时':>6s} {'结束方式':8s} 缓补")
     for r in done[-args.show:]:
@@ -261,10 +261,10 @@ def export_xlsx(normal: list[dict], aborted: list[dict],
     sm.set_column(0, 0, 26)
     sm.set_column(1, 5, 15)
     sm.write(0, 0, "粉体加粉记录汇总", f_title)
-    sm.write(1, 0, "口径：只统计结束方式为「正常判停 / 缓补收尾」的炉次；"
+    sm.write(1, 0, "口径：只统计结束方式为「正常判停 / 缓补收尾」的加粉次数；"
                    "仿真粉与未选粉（纯调试）已删除，保护中止与中途取消各列一页备查", f_txt)
 
-    head = ["统计口径", "炉数", "合格", "合格率", "平均偏差 mg", "平均绝对偏差 mg", "平均用时 s"]
+    head = ["统计口径", "加粉次数", "合格", "合格率", "平均偏差 mg", "平均绝对偏差 mg", "平均用时 s"]
     sm.write_row(3, 0, head, f_head)
     def stat_row(i: int, name: str, rs: list[dict]) -> None:
         s = summarize(rs)
@@ -281,12 +281,12 @@ def export_xlsx(normal: list[dict], aborted: list[dict],
     stat_row(5, "其中：正常判停", [r for r in normal if r["end_kind"] == "正常判停"])
     stat_row(6, "其中：缓补收尾", [r for r in normal if r["end_kind"] == "缓补收尾"])
     sm.write_string(7, 0, "另（不计入统计）", f_key)
-    sm.write_string(7, 1, f"仿真粉/未选粉 {n_excluded} 炉（已删） / 保护中止 {len(aborted)} 炉 / "
-                          f"中途取消 {len(cancelled)} 炉", f_txt)
+    sm.write_string(7, 1, f"仿真粉/未选粉 {n_excluded} 次（已删） / 保护中止 {len(aborted)} 次 / "
+                          f"中途取消 {len(cancelled)} 次", f_txt)
 
     r = 10
     sm.write(r, 0, "按日期", f_title)
-    sm.write_row(r + 1, 0, ["日期", "炉数", "合格", "合格率", "平均偏差 mg", "平均绝对偏差 mg", "平均用时 s"], f_head)
+    sm.write_row(r + 1, 0, ["日期", "加粉次数", "合格", "合格率", "平均偏差 mg", "平均绝对偏差 mg", "平均用时 s"], f_head)
     by_day: dict[str, list[dict]] = {}
     for x in normal:
         by_day.setdefault(x["start"][:10], []).append(x)
@@ -297,7 +297,7 @@ def export_xlsx(normal: list[dict], aborted: list[dict],
 
     r = r + len(by_day) + 3
     sm.write(r, 0, "按目标量段", f_title)
-    sm.write_row(r + 1, 0, ["目标区间 mg", "炉数", "合格", "合格率", "平均偏差 mg", "平均绝对偏差 mg", "平均用时 s"], f_head)
+    sm.write_row(r + 1, 0, ["目标区间 mg", "加粉次数", "合格", "合格率", "平均偏差 mg", "平均绝对偏差 mg", "平均用时 s"], f_head)
     bands = [(0, 300, "<300"), (300, 1000, "300–1000"), (1000, 2000, "1000–2000"),
              (2000, 5000, "2000–5000"), (5000, 10 ** 9, ">5000")]
     i = r + 2
@@ -311,7 +311,7 @@ def export_xlsx(normal: list[dict], aborted: list[dict],
 
     r = i + 1
     sm.write(r, 0, "按粉体", f_title)
-    sm.write_row(r + 1, 0, ["粉体", "炉数", "合格", "合格率", "平均偏差 mg", "平均绝对偏差 mg", "平均用时 s"], f_head)
+    sm.write_row(r + 1, 0, ["粉体", "加粉次数", "合格", "合格率", "平均偏差 mg", "平均绝对偏差 mg", "平均用时 s"], f_head)
     by_pow: dict[str, list[dict]] = {}
     for x in normal:
         by_pow.setdefault(x["powder"], []).append(x)
@@ -339,9 +339,9 @@ def export_xlsx(normal: list[dict], aborted: list[dict],
     sm.write_string(r + 2, 0, "中途手动取消（操作员停止）")
     sm.write_number(r + 2, 1, len(cancelled), f_txt)
 
-    # ---------------- 最近 10 炉（方便一眼看到最新几次做实的情况） ----------------
+    # ---------------- 最近 10 次加粉（方便一眼看到最新几次做实的情况） ----------------
     r = r + 4
-    sm.write(r, 0, "最近 10 炉（正常收尾）", f_title)
+    sm.write(r, 0, "最近 10 次加粉（正常收尾）", f_title)
     recent_head = ["开始时间", "粉体", "目标 mg", "实得 mg", "偏差 mg", "判定", "用时 s", "结束方式"]
     sm.write_row(r + 1, 0, recent_head, f_head)
     for i2, x in enumerate(sorted(normal, key=lambda y: y["start"])[-10:], start=r + 2):

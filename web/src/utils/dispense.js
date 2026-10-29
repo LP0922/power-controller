@@ -1,6 +1,23 @@
-export const isValidTarget = value => Number.isInteger(value) && value >= 100 && value <= 1000
-export const isValidLargeTarget = value => Number.isInteger(value) && value >= 1000 && value <= 10000
+// 加粉参数的新模型（2026-10-26 融合）：
+// 老版是「窗口位置 + 频率/占空 + 粗/细/精速率」，新版是「三阶段 + 振幅闭环」。
+// 老那套换算函数（validateInitial / dispensePayload / largeDispensePayload /
+// dispenseQueueItem / expandGrid / gridPayload / batchResults）没有对应接口了，
+// 整段删掉，免得又有人照着调出一个 404。
 
+export const TARGET_MIN_MG = 100
+export const TARGET_MAX_MG = 20000
+
+export const isValidTarget = (value) => (
+  Number.isInteger(value) && value >= TARGET_MIN_MG && value <= TARGET_MAX_MG
+)
+
+function integer(value, min, max, label) {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${label}必须是 ${min}–${max} 之间的整数`)
+  }
+}
+
+/** 试验记录页还在用的查询参数构造（该页尚未接入目前后端，保留以免 build 断） */
 export function recordQuery(filters) {
   const query = {}
   if (filters.type) query.test_type = filters.type
@@ -10,111 +27,71 @@ export function recordQuery(filters) {
   return query
 }
 
-function integer(value, min, max, label) {
-  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${label}必须是 ${min}–${max} 之间的整数`)
-}
-
-export function validateInitial(initial) {
-  integer(initial.frequency_hz, 10, 80, '频率')
-  integer(initial.duty_permyriad, 1000, 5000, '占空比万分值')
-  if (!Number.isInteger(initial.window_position_units)) throw new Error('窗口位置必须是整数')
-}
-
-export function dispensePayload(powderId, targetMg, config, manual = null) {
-  if (!powderId) throw new Error('请先选择粉末类型')
-  if (!isValidTarget(targetMg)) throw new Error('目标质量需为 100–1000 mg 整数')
-  if (!config || config.powder_id !== powderId || config.target_mg !== targetMg) throw new Error('请等待当前粉末与目标的控制配置加载完成')
-  const payload = { powder_id: powderId, powder_name: config.powder_name, target_mg: targetMg }
-  // Preserve the standard seed while allowing the API layer to offset only
-  // the outgoing request copy.
-  if (config.initial) payload.initial = { ...config.initial }
-  if (manual) {
-    validateInitial(manual.initial)
-    payload.initial = { ...manual.initial }
-    if (manual.preset_id) payload.preset_id = manual.preset_id
+/**
+ * 三阶段模型的批量项：加粉面板点「加入批量队列」时用它拼。
+ * 与「开始加粉」提交的 payload 完全同构 —— 批量跑出来的和单点跑出来的必须是同一套参数，
+ * 否则两边结果不可比。只带引擎真会消费的键。
+ */
+export function dispenseStageQueueItem({
+  target_mg, powder, category, amplitude_vpp, tail_mass_mg,
+  stages, settle_gate, settle_gate_rate_mg_s, taper_factor,
+  surge_guard, surge_ratio, trim_enabled, trim_enter_remain_mg,
+  repeat_count = 1,
+}) {
+  const target = Number(target_mg)
+  if (!isValidTarget(target)) {
+    throw new Error(`目标质量需为 ${TARGET_MIN_MG}–${TARGET_MAX_MG} mg 的整数`)
   }
-  return payload
-}
-
-export const LARGE_DEFAULT_DUTY_PERMYRIAD = 2000
-
-export function largeDispensePayload(powderId, targetMg, windowPositionUnits = 600, dutyPermyriad = LARGE_DEFAULT_DUTY_PERMYRIAD) {
-  if (!powderId) throw new Error('请先选择粉末类型')
-  if (!isValidLargeTarget(targetMg)) throw new Error('大重量目标需为 1000–10000 mg 整数')
-  if (!Number.isInteger(windowPositionUnits)) throw new Error('大重量窗口位置必须是整数')
-  integer(dutyPermyriad, 1000, 5000, '大重量预加粉占空比万分值')
-  return {
-    powder_id: powderId,
-    target_mg: targetMg,
-    initial: { window_position_units: windowPositionUnits, duty_permyriad: dutyPermyriad },
+  integer(repeat_count, 1, 20, '重复次数')
+  const params = {
+    target_mg: target,
+    powder: powder || null,
+    repeat_count,
+    category: category || null,
+    amplitude_vpp: amplitude_vpp ?? null,
+    tail_mass_mg: tail_mass_mg ?? null,
+    settle_gate: settle_gate ?? null,
+    settle_gate_rate_mg_s: settle_gate_rate_mg_s ?? null,
+    taper_factor: taper_factor ?? null,
+    surge_guard: surge_guard ?? null,
+    surge_ratio: surge_ratio ?? null,
+    trim_enabled: trim_enabled ?? null,
+    trim_enter_remain_mg: trim_enter_remain_mg ?? null,
   }
-}
-
-export function dispenseQueueItem(powderId, targetMg, config, repeats, manual = null) {
-  integer(repeats, 1, 20, '重复次数')
-  const payload = dispensePayload(powderId, targetMg, config, manual)
-  const initial = payload.initial || config.initial
-  validateInitial(initial)
-  return {
-    type: 'dispense', typeLabel: '加粉',
-    params: { powder_id: powderId, powder_name: config.powder_name, target_mg: targetMg,
-      preset_id: payload.preset_id || config.preset_id, ...initial, repeat_count: repeats },
-  }
+  if (stages && stages.length) params.stages = stages
+  return { type: 'dispense', typeLabel: '加粉', params }
 }
 
 export function validateBatchQueue(queue) {
   if (!queue.length || queue.length > 20) throw new Error('批量队列需为 1–20 组')
-  const types = new Set(queue.map(item => item.type))
-  if (types.size !== 1) throw new Error('定速测试与加粉任务请分批执行，不能混合运行')
-  if (!['constant-rate', 'dispense'].includes(queue[0].type)) throw new Error('未知批量类型')
+  const types = new Set(queue.map((item) => item.type))
+  if (types.size !== 1) throw new Error('不同任务类型请分批执行，不能混合运行')
+  if (queue[0].type !== 'dispense') {
+    throw new Error('当前只支持「加粉」批量：定速引擎已下线，加粉统一走三阶段振幅闭环')
+  }
   for (const item of queue) {
-    validateInitial(item.params)
-    integer(item.params.repeat_count || 1, 1, 20, '重复次数')
+    const target = item.params?.target_mg
+    if (!isValidTarget(target)) {
+      throw new Error(`每一项目标质量需为 ${TARGET_MIN_MG}–${TARGET_MAX_MG} mg 的整数`)
+    }
+    integer(item.params?.repeat_count ?? 1, 1, 20, '重复次数')
   }
-  if (queue[0].type === 'dispense') {
-    if (queue.some(item => !item.params.powder_id || !isValidTarget(item.params.target_mg))) throw new Error('加粉批量任务缺少粉末类型或有效目标')
-    if (new Set(queue.map(item => item.params.powder_id)).size !== 1) throw new Error('同一批量队列只能使用一种粉末，请先清空现有加粉任务')
+  if (new Set(queue.map((item) => item.params?.powder || '')).size !== 1) {
+    throw new Error('同一批量队列只能使用一种粉末，请先清空现有加粉任务')
   }
+  const total = queue.reduce((sum, item) => sum + (item.params?.repeat_count ?? 1), 0)
+  if (total > 40) throw new Error(`展开后共 ${total} 项，超过后端上限 40 项`)
 }
 
-function parseNumbers(value, label) {
-  const parts = value.split(/[,，]/).map(x => x.trim())
-  if (!parts.length || parts.some(x => !x || !Number.isFinite(Number(x)))) throw new Error(`${label}列表含空值或无效数字`)
-  return [...new Set(parts.map(Number))]
-}
-
-export function expandGrid(form) {
-  const freqs = parseNumbers(form.freqs, '频率'), duties = parseNumbers(form.duties, '占空比'), windows = parseNumbers(form.windows, '窗口')
-  if (freqs.length * duties.length * windows.length > 20) throw new Error('网格最多允许20组，请缩小参数列表')
-  const rows = []
-  for (const frequency_hz of freqs) for (const duty of duties) for (const window_position_units of windows) {
-    const row = { frequency_hz, duty_permyriad: Math.round(duty * 100), window_position_units }
-    validateInitial(row)
-    rows.push(row)
-  }
-  return rows
-}
-
-export function gridPayload(rows, form, powder) {
-  if (!rows.length || rows.length > 20) throw new Error('请先生成1–20组网格预览')
-  if (!Number.isFinite(form.duration_s) || form.duration_s < 1 || form.duration_s > 120) throw new Error('每组时长需为1–120秒')
-  integer(form.repeat_count, 1, 20, '重复次数')
-  const sets = rows.map(row => {
-    validateInitial(row)
-    return { frequency_hz: row.frequency_hz, duty_permyriad: row.duty_permyriad,
-      window_position_units: row.window_position_units, duration_s: form.duration_s, repeat_count: form.repeat_count }
-  })
-  return { experiment_type: 'constant_rate', powder_id: powder.powder_id || 'custom',
-    powder_name: powder.powder_name || 'custom', experiment_id: powder.powder_id || 'custom-scan',
-    sets, duration_s: form.duration_s, repeat_count: form.repeat_count,
-    tare_between_sets: form.tare_between_sets, auto_collect: form.auto_collect }
-}
-
-export function batchResults(result) {
-  return (result.set_results || result.batch_results || []).map(row => ({
-    ...row, passed: row.acceptance_passed ?? row.passed ?? row.summary?.overall_passed ?? row.acceptance?.passed ?? (row.result === 'completed'),
-    avg_rate_mg_s: row.avg_rate_mg_s ?? row.summary?.overall_mean_rate_mg_s,
-    cv_percent: row.cv_percent ?? row.summary?.overall_cv_pct,
-    final_mass_mg: row.final_mass_mg ?? row.mean_final_mass_mg,
-  }))
+/** 批量队列里一行参数的摘要文字（表格里显示用） */
+export function stageSummary(stages) {
+  if (!Array.isArray(stages) || !stages.length) return '—'
+  const text = { fast: '快', coarse: '粗', slow: '慢' }
+  return stages.map((s) => {
+    const bits = []
+    if (s.amplitude_vpp != null) bits.push(`${s.amplitude_vpp}V`)
+    if (s.rod_units != null) bits.push(`杆${s.rod_units}`)
+    if (s.stir_rpm != null) bits.push(`${s.stir_rpm}rpm`)
+    return `${text[s.name] || s.name}:${bits.join('/') || '默认'}`
+  }).join('  ')
 }

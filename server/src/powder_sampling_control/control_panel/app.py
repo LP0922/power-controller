@@ -24,9 +24,11 @@ import json
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
 from powder_sampling_control.device_adapters import (
     AT8811CConfig,
@@ -43,6 +45,7 @@ from powder_sampling_control.device_adapters import (
     ZDTEmm42Private,
     Emm42PrivateConfig,
 )
+from powder_sampling_control.control_panel.batch_runner import DispenseBatchRunner
 from powder_sampling_control.control_panel.dispense_runner import DispenseRunner
 from powder_sampling_control.control_panel.powder_feedforward import (
     CATEGORIES as POWDER_CATEGORIES,
@@ -72,6 +75,9 @@ from powder_sampling_control.control_panel.rate_calibration import (
 LIFT_PORT = "COM10"      # 双 MD30 升降 + LA 推杆 共享总线
 STIR_PORT = "COM9"       # ZDT 搅拌电机
 SIG_PORT = "COM16"       # QLS3600S 信号发生器（振动给料）
+# 2026-10-27：USB 曾重新枚举到 COM17；2026-10-28 插回原口，仍是 COM16（CH340）。
+# 设备管理器显示 USB-SERIAL CH340，RBs 只读探测回 #RB0000000000 即同一台 QLS3600S。
+# 插口再变就改这一行（或用 --sig-port 覆盖）。
 BAL_PORT = "COM11"       # AT8811C 天平（Modbus RTU 从站 1 @9600，FTDI FT232）
 # 天平原始计数 → 质量（mg）。1 count = 1 mg 已由历史闭环加粉记录标定：
 # batch_test/feedback_dispense_*100mg*.json 里 raw_count=93 且 final_mass_mg=93.0，
@@ -192,6 +198,8 @@ class ActuatorHub:
         self._bal_next_try = 0.0
         self._bal_fail_logged = False
         self._bal_base: dict | None = None      # 扣重基准（页面 Δ 增量的起点）
+        # 搅拌最近一次下发的设定转速：停止时读不到实时转速就用它判断"低速/高速"。
+        self._stir_cmd_rpm: float = 0.0
 
         self.lift = MD30DualLift(port=lift_port, slave_addresses=(1, 2),
                                  default_speed=LIFT_SPEED_RAW,
@@ -211,6 +219,11 @@ class ActuatorHub:
         self.dispense = DispenseRunner(self, _log)
         # 开环速率标定执行器：输入粉名 → 扫 (搅拌, 推杆开度) → 得到该粉的速率表。
         self.calib = RateCalibrationRunner(self, _log)
+        # 批量加粉：串行排队调用 self.dispense，项间可自动去皮（不复制闭环逻辑）。
+        self.batch = DispenseBatchRunner(self, _log)
+        # 老版页面 /api/snapshot 的短缓存（见 legacy_snapshot 的注释）
+        self._legacy_snap_cache: dict | None = None
+        self._legacy_snap_cache_at = 0.0
 
     def _get_bus10(self):
         """获取 COM10 共享句柄；掉线后下次访问自动重开（USB 重插即恢复）。"""
@@ -523,7 +536,7 @@ class ActuatorHub:
         # 闭环加粉：纯内存状态，不碰串口，直接带上（页面用它画进度与结果）。
         status["dispense"] = self.dispense.status()
         # 结束后「当前质量」还要继续实时读：收尾（settling）和结束（done/aborted）时
-        # 闭环主循环已经不再采数，页面拿本炉基线把这一轮天平计数换算成净质量自己刷新。
+        # 闭环主循环已经不再采数，页面拿本次加粉基线把这一轮天平计数换算成净质量自己刷新。
         # 用 raw 而不是 bal.mg，因为基线本身就是由 raw 计数取的，两者口径必须一致。
         bal_now = status.get("bal") or {}
         if bal_now.get("raw") is not None:
@@ -555,6 +568,161 @@ class ActuatorHub:
         status["sig"] = self.sig_snapshot()
         status["ok"] = not status["errors"] and self._sync_alarm is None
         return status
+
+    # ------------------------------------------------------------------
+    # 老版 Vue 前端（web/）兼容层
+    # ------------------------------------------------------------------
+    # 背景（2026-10-26）：web/ 那套 Vue 页面（6 个页签、200ms 轮询）是上一代界面，
+    # 只认 at8811c / la10 / test 三段结构；目前后端是 lift / rod / stir / bal /
+    # dispense。两套界面共用**同一个进程、同一套串口**，所以这里只做字段翻译，
+    # 不复制任何控制逻辑、不缓存第二份状态：所有值都现取 poll_status()。
+    #
+    # 没有对应实现的老字段（加速度/加加速度/天平配置寄存器表）一律给 None，
+    # 让页面显示 "--"，绝不编数字。
+    LEGACY_LA10_FAULT_MASK = 0x0F   # LA 的 error 字节只有 bit0..3 有定义
+    LEGACY_SNAPSHOT_CACHE_S = 0.35  # 老前端 200ms 轮询 → 串口实际 0.35s 一次
+
+    def _legacy_la10_registers(self, rod: dict, sig: dict) -> list[dict]:
+        """把推杆/振动状态摊成老前端要的 15 行 LA10 寄存器视图（只读快照）。
+
+        只写寄存器（0-4）给 None：老后端的驱动能回读，目前后端不读，
+        给个假值比显示 "--" 更危险——用户会以为那是设备真实状态。
+        """
+        duty = sig.get("duty")
+        output = sig.get("output")
+        pos, target = rod.get("pos"), rod.get("target")
+        running = None
+        if pos is not None and target is not None:
+            running = 1 if int(target) != int(pos) else 0
+        raw = {
+            0: None,                                        # 控制命令（只写）
+            1: None,                                        # 运动方向（只写）
+            2: None,                                        # 运动距离（只写）
+            3: None,                                        # 运动速度（只写）
+            4: None,                                        # 运动使能（只写）
+            5: pos,                                         # 当前位置（200 单位/mm）
+            6: target,                                      # 当前目标
+            7: rod.get("temp"),                             # 温度
+            8: rod.get("current"),                          # 电流
+            9: rod.get("error"),                            # 故障位（bit0..3）
+            10: running,                                    # 运行状态
+            11: None,                                       # 最后结果（目前后端不读）
+            12: (round(sig["freq"]) if sig.get("freq") is not None else None),
+            13: (round(duty * 100) if duty is not None else None),   # 老前端按 /100 显示 %
+            14: (None if output is None else (1 if output else 0)),
+        }
+        return [{"address": addr, "value": value} for addr, value in raw.items()]
+
+    def legacy_snapshot(self) -> dict:
+        """老版页面 /api/snapshot。
+
+        老前端固定 200ms 轮询，直接透传给 poll_status() 会把 COM10/COM9/COM11
+        的读取频率翻一倍（现在单页面板是 500ms），加粉运行中容易和控制指令抢锁。
+        这里做 0.35s 短缓存：页面照样 200ms 刷新，串口按 0.35s 走。
+        """
+        now = time.monotonic()
+        if (self._legacy_snap_cache is not None
+                and now - self._legacy_snap_cache_at < self.LEGACY_SNAPSHOT_CACHE_S):
+            return self._legacy_snap_cache
+        payload = self._legacy_snapshot_uncached()
+        self._legacy_snap_cache = payload
+        self._legacy_snap_cache_at = now
+        return payload
+
+    def _legacy_snapshot_uncached(self) -> dict:
+        """真正的取数：结构照旧，数据全部来自 poll_status()。"""
+        st = self.poll_status()
+        bal = st.get("bal") or {}
+        rod = st.get("rod") or {}
+        disp = st.get("dispense") or {}
+        live = disp.get("live") or {}
+        cfg = disp.get("config") or {}
+        result = disp.get("result") or {}
+        sig = st.get("sig") or {}
+
+        at8811c = {
+            "online": bool(bal.get("online")),
+            "error": bal.get("error"),
+            "raw_weight_mg": bal.get("raw"),        # 老字段名：原始计数
+            "weight_g": bal.get("g"),
+            "status_word": bal.get("status_word"),
+            "stable": bal.get("stable"),
+            "in_zero_band": bal.get("zero_band"),   # 老字段名：零区位
+            "stale": bool(bal.get("stale")),
+            # 老后端会读天平 13 项配置寄存器；目前后端不读，给 None 让面板不显示该表
+            "configuration": None,
+        }
+
+        pos_units = rod.get("pos")
+        rod_online = pos_units is not None
+        la10 = {
+            "online": rod_online,
+            "error": None if rod_online else "推杆无应答",
+            "position_mm": (pos_units / 200.0) if rod_online else None,
+            "target_mm": ((rod.get("target") or 0) / 200.0) if rod_online else None,
+            "fault_bits": int(rod.get("error") or 0) & self.LEGACY_LA10_FAULT_MASK,
+            "error_raw": rod.get("error"),
+            "registers": self._legacy_la10_registers(rod, sig),
+        }
+
+        # 净质量优先：收尾/结束后 live.mass_mg 会冻住，net_mass 才是当下真实值
+        net = disp.get("net_mass_mg")
+        mass = net if net is not None else live.get("mass_mg")
+        batch = self.batch.status()
+        batch_active = batch["state"] == "running"
+        test = {
+            "status": "running" if (disp.get("running") or batch_active) else "idle",
+            "phase": (batch["detail"] if batch_active
+                      else (live.get("stage_text") or disp.get("detail"))),
+            "phase_code": live.get("stage"),
+            "detail": batch["detail"] if batch_active else disp.get("detail"),
+            "target_mass_mg": cfg.get("target_mg"),
+            "final_mass_mg": result.get("achieved_mg"),
+            # 老面板靠 run_id 前缀判断"这是批量"（disp-batch-…）；
+            # result.set_results 是老面板的批量结果表数据源。
+            "run_id": batch["run_id"] or None,
+            "result": ({"set_results": batch["results"],
+                        "summary": batch["summary"]}
+                       if batch["results"] else None),
+            "latest_sample": {
+                "mass_mg": mass,
+                "rate_mg_s": live.get("rate_mg_s"),
+                # 目前引擎不算这两个量（老后端有），给 None → 页面显示 --
+                "acceleration_mg_s2": None,
+                "jerk_mg_s3": None,
+                "elapsed_s": live.get("elapsed_s"),
+                "stage": live.get("stage"),
+                "amp_vpp": live.get("amp_vpp"),
+                "stir_rpm": live.get("stir_rpm"),
+                "remaining_mg": live.get("remaining_mg"),
+            },
+        }
+
+        return {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "at8811c": at8811c,
+            "la10": la10,
+            "test": test,
+            # 升降（老页面没有这个面板，带上给以后的批量/网格页用）
+            "lift": st.get("lift"),
+            "stir": st.get("stir"),
+            "sig": sig,
+            "dispense": {
+                "state": disp.get("state"),
+                "running": bool(disp.get("running")),
+                "detail": disp.get("detail"),
+                "config": cfg,
+                "plan": disp.get("plan"),
+                "net_mass_mg": net,
+                "stages": disp.get("stages"),
+                "result": result,
+            },
+            # 批量加粉队列状态（第几项 / 每项结果 / 通过率）
+            "batch": batch,
+            "errors": st.get("errors") or [],
+            "stale": bool(st.get("stale")),
+            "ok": st.get("ok"),
+        }
 
     # ------------------------------------------------------------------
     # 升降（双 MD30，广播同步）
@@ -726,8 +894,29 @@ class ActuatorHub:
         with self._bus9(self.CTRL_LOCK_TIMEOUT_S):
             self.stir.enable(True)
             self.stir.set_speed(float(rpm), acceleration=int(acc), direction=int(direction))
+            self._stir_cmd_rpm = float(rpm)
         _log(f"搅拌启动 {rpm} RPM（acc={acc}，方向={direction}）")
         return {"rpm": rpm, "acc": acc, "direction": direction}
+
+    # 低速搅拌停的时候一律立即停（2026-10-27 15:48 用户要求）。
+    # 减速停要走 acc 曲线慢慢往下降，低速段本来就没多少动能，省不下什么，多花的那点
+    # 时间只会让转子上挂的粉继续往下落、天平继续涨 —— 沉降门和收尾称重都被这点余料带偏。
+    # 低速急停没有冲击问题（驱动 0–3000 RPM 全速域都支持立即停）。
+    STIR_STOP_IMMEDIATE_BELOW_RPM = 50.0
+
+    def _stir_rpm_for_stop(self) -> float:
+        """停止前估一次当前转速。**调用方必须已持有 COM9 锁**。
+
+        优先真读一次驱动的实时转速（一次事务）；读不到就退回最近一次下发的设定值
+        （`_stir_cmd_rpm`），避免"读不到转速就不敢判断"把低速停又拖回减速停。
+        注意这里不能调 `_stir_speed_rpm()`：它自己会再拿一次同一把非重入锁 → 死锁。
+        """
+        try:
+            return float(self.stir.read_speed())
+        except Exception as error:      # noqa: BLE001 - 读不到不该阻断停止
+            _log(f"停止前读搅拌转速失败（{error}），按最近设定值 "
+                 f"{self._stir_cmd_rpm:.0f} RPM 判断")
+        return float(self._stir_cmd_rpm)
 
     def stir_stop(self, mode: str = "immediate", acc: int = 200) -> dict:
         # 停止这条路不能因为参数越界就失败：acc 是 0..255 的加减速曲线等级，
@@ -735,17 +924,28 @@ class ActuatorHub:
         # 结果就是"该停没停"——搅拌一直转，粉一直落，天平还在涨。
         # 这里统一钳位；decel 万一失败再降级立即停：停下来永远比停得柔和重要。
         acc = max(0, min(255, int(acc)))
+        rpm_now: float | None = None
+        note = ""
         with self._bus9(self.CTRL_LOCK_TIMEOUT_S):
             if mode == "decel":
-                try:
-                    self.stir.stop_decelerated(acceleration=acc)
-                except Exception as error:      # noqa: BLE001
-                    _log(f"搅拌减速停止失败（acc={acc}：{error}），改为立即停止")
+                rpm_now = self._stir_rpm_for_stop()
+                if abs(rpm_now) < self.STIR_STOP_IMMEDIATE_BELOW_RPM:
+                    # 低速：不再走 acc 曲线，直接急停（见常量的注释）
                     self.stir.stop_immediate()
+                    mode = "immediate"
+                    note = f"，转速 {rpm_now:.0f} RPM < {self.STIR_STOP_IMMEDIATE_BELOW_RPM:.0f}，改立即停"
+                else:
+                    try:
+                        self.stir.stop_decelerated(acceleration=acc)
+                    except Exception as error:      # noqa: BLE001
+                        _log(f"搅拌减速停止失败（acc={acc}：{error}），改为立即停止")
+                        self.stir.stop_immediate()
+                        mode = "immediate"
             else:
                 self.stir.stop_immediate()
-        _log(f"搅拌停止（{mode}，acc={acc}）")
-        return {"mode": mode, "acc": acc}
+        self._stir_cmd_rpm = 0.0
+        _log(f"搅拌停止（{mode}，acc={acc}{note}）")
+        return {"mode": mode, "acc": acc, "rpm": rpm_now}
 
     def stir_clear_stall(self) -> dict:
         """解除搅拌驱动的堵转保护（0x0E），并把清除前后的状态字节都报出来。
@@ -817,6 +1017,43 @@ class ActuatorHub:
             "output": state.output_on,
             "remaining": remaining,
         }
+
+    def legacy_la10_write_register(self, address: Any, value: Any) -> dict:
+        """老前端的 LA10 寄存器写入：只支持振动三件套（地址 12 / 13 / 14）。
+
+        为什么只放这三个：老页面是「逐个地址写」的模型，写 1/2/3/4 再写 4 触发
+        相对运动；目前后端的推杆指令是**整帧原子下发**（目标行程一次到位，带
+        偏差校验和看门狗）。拆成四次单写再去凑一条运动，等于绕过那套保护，
+        所以这里直接拒绝，让用户走推杆运动接口。
+        """
+        try:
+            addr = int(address)
+            val = int(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"寄存器地址/数值必须是整数：{error}") from error
+
+        if addr == 12:
+            if not 10 <= val <= 80:
+                raise ValueError(f"振动频率 {val} Hz 超出 10–80，拒绝写入")
+            self.sig_set_frequency(float(val))
+            return {"ok": True, "address": addr, "value": val,
+                    "action": f"振动频率 → {val} Hz"}
+        if addr == 13:
+            if not 1000 <= val <= 5000:
+                raise ValueError(f"占空比 {val} 超出 1000–5000（即 10%–50%），拒绝写入")
+            self.sig_set_duty(val / 100.0)
+            return {"ok": True, "address": addr, "value": val,
+                    "action": f"占空比 → {val / 100.0:g}%"}
+        if addr == 14:
+            on = bool(val)
+            self.sig_output_user(on)
+            return {"ok": True, "address": addr, "value": val,
+                    "action": "振动输出 → 开" if on else "振动输出 → 关"}
+
+        raise ValueError(
+            f"寄存器 {addr} 不支持逐个写入：目前后端的推杆按行程一次性下发"
+            f"（地址 0–4 由一次运动指令原子完成），请用「推杆运动」接口；"
+            f"可单独写的只有 12（频率）/ 13（占空比）/ 14（振动使能）")
 
     def sig_apply_defaults(self, *, waveform: int = 2, frequency_hz: float = 80.0,
                            duty_percent: float = 50.0,
@@ -1198,7 +1435,7 @@ class ActuatorHub:
 
         加粉期间振动频率/占空比/推杆开度全由控制器逐帧接管，此时人手插一脚
         （改振幅、动推杆、开搅拌）会让控制器基于错误的执行器状态继续算，
-        轻则这一炉废掉，重则过冲超重。标定同理：它要的是固定参数下的稳态流量，
+        轻则这一次加粉废掉，重则过冲超重。标定同理：它要的是固定参数下的稳态流量，
         中途被人改一个数，整张速率表就废了。停止/急停永远允许，不拦。
         """
         if self.dispense.running:
@@ -1209,6 +1446,12 @@ class ActuatorHub:
             raise InterlockError(
                 f"速率标定运行中，禁止{action}：标定要求参数固定，"
                 f"请先停止标定（或直接急停）")
+        # 批量项与项之间 dispense 会短暂空闲（去皮那 1~2s），这时候人手插一脚
+        # 会直接进到下一项的基线里，所以整批期间一律拦住。
+        if self.batch.running:
+            raise InterlockError(
+                f"批量加粉运行中，禁止{action}：队列会自动换项并做组间去皮，"
+                f"请先点「停止批量」")
 
     def assert_idle_for_dispense(self) -> dict:
         """闭环加粉启动前的机构静止校验。
@@ -1264,6 +1507,10 @@ class ActuatorHub:
                        trim_pulse_target_mg: Any = None) -> dict:
         if self.calib.running:
             raise InterlockError("速率标定正在运行，不能同时开始闭环加粉——请先停止标定")
+        if self.batch.running:
+            # 批量在跑时页面上的"开始加粉"必须拦住：否则手动这一项会插到队列中间，
+            # 批量线程等它结束时还会把它的结果算成队列中某一项的结果。
+            raise InterlockError("批量加粉正在运行，不能单独启动——请先停止批量")
         try:
             status = self.dispense.start(
                 target_mg, category=category, preset_id=preset_id,
@@ -1316,6 +1563,21 @@ class ActuatorHub:
 
     def dispense_stop(self) -> dict:
         return self.dispense.stop("操作员停止")
+
+    # ------------------------------------------------------------------
+    # 批量加粉（串行队列，见 batch_runner.py）
+    # ------------------------------------------------------------------
+
+    def batch_start(self, sets: Any, *, powder: Any = None,
+                    tare_between_sets: Any = None) -> dict:
+        return self.batch.start(sets, powder=powder,
+                                tare_between_sets=tare_between_sets)
+
+    def batch_stop(self) -> dict:
+        return self.batch.stop()
+
+    def batch_status(self) -> dict:
+        return self.batch.status()
 
     # ------------------------------------------------------------------
     # 开环速率标定（粉体前馈表）
@@ -1490,7 +1752,9 @@ class ControlPageHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802 - http.server 命名
-        if self.path in ("/", "/index.html"):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path in ("/", "/index.html"):
             page = (HERE / "index.html").read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1500,13 +1764,55 @@ class ControlPageHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(page)))
             self.end_headers()
             self.wfile.write(page)
-        elif self.path == "/api/status":
-            try:
-                self._send_json(HUB.poll_status())
-            except Exception as error:  # noqa: BLE001
-                self._send_json({"ok": False, "errors": [str(error)]}, code=500)
-        else:
+            return
+
+        # 查询串统一解析：老前端的 /api/dispense/config 用 ?powder_id=&target_mg=
+        query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+
+        def _num(name: str) -> float | None:
+            raw = query.get(name)
+            if raw in (None, ""):
+                return None
+            return float(raw)
+
+        def _target() -> float:
+            value = _num("target_mg") if _num("target_mg") is not None else _num("target")
+            if value is None:
+                raise ValueError("缺少 target_mg")
+            return value
+
+        get_routes: dict[str, Callable[[], Any]] = {
+            "/api/status": HUB.poll_status,
+            # ---- 老版 Vue 前端（web/）----
+            "/api/snapshot": HUB.legacy_snapshot,
+            "/api/dispense/powders": HUB.powder_list,
+            # 老页面要「计划预览」，直接给目前后端的三阶段计划（同一份口径）
+            "/api/dispense/plan": lambda: HUB.dispense_plan(
+                _target(),
+                powder=query.get("powder") or query.get("powder_id"),
+                settle_gate=(None if query.get("settle_gate") in (None, "")
+                             else query.get("settle_gate") not in ("0", "false", "False"))),
+            "/api/dispense/config": lambda: HUB.dispense_plan(
+                _target(),
+                powder=query.get("powder") or query.get("powder_id"),
+                settle_gate=(None if query.get("settle_gate") in (None, "")
+                             else query.get("settle_gate") not in ("0", "false", "False"))),
+            # 新体系没有 preset/control-profile 概念（参数由三阶段表决定），
+            # 老页面若还留着这两个下拉，给空数组让它自然隐藏，别无中生有。
+            "/api/dispense/presets": lambda: {"presets": []},
+            "/api/dispense-plans": lambda: {"plans": []},
+            # 批量加粉队列状态（第几项、每项结果、通过率）
+            "/api/dispense/batch/status": HUB.batch_status,
+        }
+
+        handler = get_routes.get(path)
+        if handler is None:
             self._send_json({"error": "not found"}, code=404)
+            return
+        try:
+            self._send_json(handler())
+        except Exception as error:  # noqa: BLE001
+            self._send_json({"ok": False, "error": str(error)}, code=400)
 
     def do_POST(self) -> None:  # noqa: N802 - http.server 命名
         def manual(action: str, handler: Callable[[dict], Any]) -> Callable[[dict], Any]:
@@ -1551,10 +1857,16 @@ class ControlPageHandler(BaseHTTPRequestHandler):
                 int(body["count"]), frequency_hz=body.get("frequency_hz"),
                 amplitude_vpp=body.get("amplitude_vpp"))),
             "/api/sig/stop": lambda body: HUB.sig_stop(),
+            # 老版页面的 LA10 寄存器写入（只放行振动三件套 12/13/14，见方法注释）
+            "/api/la10/register": manual("写 LA10 寄存器",
+                                          lambda body: HUB.legacy_la10_write_register(
+                                              body["address"], body["value"])),
             # ---- 天平（AT8811C，COM11）----
             "/api/bal/refresh": lambda body: HUB.bal_refresh(),
             # 加粉途中去皮会把闭环的基线干掉，必须拦
             "/api/bal/tare": manual("天平去皮归零", lambda body: HUB.bal_tare()),
+            # 老版页面的路径别名（web/ 用的是 /api/balance/tare）
+            "/api/balance/tare": manual("天平去皮归零", lambda body: HUB.bal_tare()),
             "/api/bal/stable": lambda body: HUB.bal_stable(
                 body.get("timeout_s", 6.0), body.get("samples", 8)),
             "/api/bal/base": lambda body: HUB.bal_set_base(
@@ -1586,6 +1898,15 @@ class ControlPageHandler(BaseHTTPRequestHandler):
                 settle_gate_rate_mg_s=body.get("settle_gate_rate_mg_s"),
                 taper_factor=body.get("taper_factor")),
             "/api/dispense/stop": lambda body: HUB.dispense_stop(),
+            # 老版页面用语：cancel = 停止（同一个入口，停止永远允许）
+            "/api/dispense/cancel": lambda body: HUB.dispense_stop(),
+            # ---- 批量加粉（串行队列；每项仍是正常的一次加粉）----
+            "/api/dispense/batch": lambda body: HUB.batch_start(
+                body.get("sets"),
+                powder=body.get("powder") or body.get("powder_name"),
+                tare_between_sets=body.get("tare_between_sets")),
+            "/api/dispense/batch/stop": lambda body: HUB.batch_stop(),
+            "/api/dispense/batch/cancel": lambda body: HUB.batch_stop(),
             # ---- 粉体前馈库 + 开环速率标定 ----
             "/api/powder/list": lambda body: HUB.powder_list(),
             "/api/powder/detail": lambda body: HUB.powder_detail(body["name"]),

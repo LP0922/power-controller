@@ -3,7 +3,7 @@
   "powder_id": "powder-20260817-143530-182017",
   "head_type": "gravity-cone-vibration",
   "created_at": "2026-08-17T14:35:30+08:00",
-  "updated_at": "2026-08-25T15:05:00+08:00",
+  "updated_at": "2026-10-29 18:21:48",
   "control_profile_status": "draft",
   "probe_40hz": {
     "frequency_hz": 40,
@@ -17,34 +17,77 @@
     "source": "fingerprint"
   },
   "historical_1000mg_window300": {
-    "initial_parameters": {"frequency_hz": 80, "duty_permyriad": 2500, "window_position_units": 300},
+    "initial_parameters": {
+      "frequency_hz": 80,
+      "duty_permyriad": 2500,
+      "window_position_units": 300
+    },
     "source_run_ids": [
       "dispense-1000mg-20260817_170231-9cfd13",
       "dispense-1000mg-20260817_170619-a4ebdb",
       "dispense-1000mg-20260817_170853-5fc0c4",
       "dispense-1000mg-20260817_172420-c98305"
     ],
-    "final_masses_mg": [1006.0, 1003.0, 1010.0, 1013.0],
-    "stop_masses_mg": [992.0, 991.0, 993.0, 993.0],
-    "actual_tail_masses_mg": [14.0, 12.0, 17.0, 20.0],
-    "durations_s": [46.422, 45.765, 48.484, 40.828],
-    "maximum_duty_permyriad": [3040, 3460, 3340, 2980],
+    "final_masses_mg": [
+      1006.0,
+      1003.0,
+      1010.0,
+      1013.0
+    ],
+    "stop_masses_mg": [
+      992.0,
+      991.0,
+      993.0,
+      993.0
+    ],
+    "actual_tail_masses_mg": [
+      14.0,
+      12.0,
+      17.0,
+      20.0
+    ],
+    "durations_s": [
+      46.422,
+      45.765,
+      48.484,
+      40.828
+    ],
+    "maximum_duty_permyriad": [
+      3040,
+      3460,
+      3340,
+      2980
+    ],
     "conclusion": "best-supported historical seed for the older batch, but the current batch did not flow at window 300"
   },
   "current_batch_window_screen_20260825": {
     "powder_identity_warning": "physical powder was reported as 封堵剂2, but the running service logged 失水剂1-text; these records are window-screen evidence only and are excluded from formal validation",
     "window400_runs": [
-      {"run_id": "dispense-1000mg-20260825_142712-355913", "final_mass_mg": 1007.0},
-      {"run_id": "dispense-1000mg-20260825_143346-2f113d", "final_mass_mg": 978.0}
+      {
+        "run_id": "dispense-1000mg-20260825_142712-355913",
+        "final_mass_mg": 1007.0
+      },
+      {
+        "run_id": "dispense-1000mg-20260825_143346-2f113d",
+        "final_mass_mg": 978.0
+      }
     ],
-    "window450_final_masses_mg": [1024.0, 1061.0, 1065.0],
+    "window450_final_masses_mg": [
+      1024.0,
+      1061.0,
+      1065.0
+    ],
     "window500_observation": "approximately 941 mg within 3.3 s before failure",
     "conclusion": "use window 400 for the first correctly identified supervised run; do not use 450 or 500"
   },
   "candidate_20260825": {
     "preset_id": "80hz-22pct-p400-plugging-agent-2",
     "target_mass_mg": 1000,
-    "initial_parameters": {"frequency_hz": 80, "duty_permyriad": 2200, "window_position_units": 400},
+    "initial_parameters": {
+      "frequency_hz": 80,
+      "duty_permyriad": 2200,
+      "window_position_units": 400
+    },
     "maximum_flow_rate_mg_s": 40.0,
     "base_fixed_tail_mass_mg": 2.0,
     "1000mg_fixed_tail_mass_mg": 15.0,
@@ -53,7 +96,10 @@
     "max_duty_permyriad": 2500,
     "flow_hold_min_gain_mg_per_4s": 20.0,
     "stall_recovery_enabled": true,
-    "stall_recovery_window_range_units": [400, 425],
+    "stall_recovery_window_range_units": [
+      400,
+      425
+    ],
     "stall_recovery_max_attempts": 2,
     "stall_recovery_disable_remaining_mg": 100.0,
     "tail_taper_start_remaining_mg": 80.0,
@@ -68,9 +114,20 @@
     "last_mass_mg": 945.0,
     "duration_s": 180.25,
     "failure": "timeout",
-    "long_zero_gain_plateaus_s": [11.66, 10.86, 10.59, 8.12],
-    "duty_range_permyriad": [2020, 2410],
-    "window_range_units": [400, 400],
+    "long_zero_gain_plateaus_s": [
+      11.66,
+      10.86,
+      10.59,
+      8.12
+    ],
+    "duty_range_permyriad": [
+      2020,
+      2410
+    ],
+    "window_range_units": [
+      400,
+      400
+    ],
     "conclusion": "heterogeneous large particles cause bridging; enable p400-to-p425 pulse recovery and keep p450 prohibited"
   },
   "first_stall_recovery_run_20260825": {
@@ -87,17 +144,45 @@
   },
   "fast_stop_batch_20260825": {
     "batch_id": "disp-batch-1sets-20260825_153140-2b76d8",
-    "final_masses_mg": [1020.0, 1025.0, 1033.0],
-    "stop_masses_mg": [977.0, 963.0, 998.0],
-    "post_stop_tail_masses_mg": [43.0, 62.0, 35.0],
-    "durations_s": [73.109, 54.782, 42.063],
-    "stall_recovery_counts": [3, 0, 0],
-    "offline_replay_stop_masses_mg": [957.0, 950.0, 963.0],
+    "final_masses_mg": [
+      1020.0,
+      1025.0,
+      1033.0
+    ],
+    "stop_masses_mg": [
+      977.0,
+      963.0,
+      998.0
+    ],
+    "post_stop_tail_masses_mg": [
+      43.0,
+      62.0,
+      35.0
+    ],
+    "durations_s": [
+      73.109,
+      54.782,
+      42.063
+    ],
+    "stall_recovery_counts": [
+      3,
+      0,
+      0
+    ],
+    "offline_replay_stop_masses_mg": [
+      957.0,
+      950.0,
+      963.0
+    ],
     "conclusion": "0 of 3 passed; apply a 1000 mg-only tail and force-stop override before another supervised run"
   },
   "window375_supervised_run_20260825": {
     "run_id": "dispense-1000mg-20260825_163335-2772b2",
-    "initial_parameters": {"frequency_hz": 80, "duty_permyriad": 2200, "window_position_units": 375},
+    "initial_parameters": {
+      "frequency_hz": 80,
+      "duty_permyriad": 2200,
+      "window_position_units": 375
+    },
     "result": "failed",
     "final_mass_mg": 1016.0,
     "stop_mass_mg": 968.0,
@@ -111,12 +196,21 @@
     "scope": "powder-20260817-143530-182017 exact target 1000 mg only",
     "transition_mass_mg": 700.0,
     "hold_window_position_units": 350,
-    "standard_pulse_window_range_units": [380, 390],
+    "standard_pulse_window_range_units": [
+      380,
+      390
+    ],
     "pulse_frequency_hz": 80,
     "pulse_duty_permyriad": 1000,
-    "pulse_duration_range_s": [0.08, 0.3],
+    "pulse_duration_range_s": [
+      0.08,
+      0.3
+    ],
     "initial_pulse_duration_s": 0.2,
-    "acceptance_range_mg": [990.0, 1010.0],
+    "acceptance_range_mg": [
+      990.0,
+      1010.0
+    ],
     "maximum_attempts": 12,
     "maximum_consecutive_no_gain_attempts": 2,
     "safety_rule": "close to p350 and wait for stable mass after every pulse; never automatically open p400",
@@ -127,13 +221,34 @@
       "dispense-1000mg-20260825_172445-666d88",
       "dispense-1000mg-20260825_173158-4e4a6d"
     ],
-    "results": ["completed", "failed"],
-    "final_masses_mg": [1008.0, 986.0],
-    "durations_s": [28.625, 56.672],
-    "transition_sample_masses_mg": [713.0, 706.0],
-    "transition_stable_masses_mg": [819.0, 737.0],
-    "pulse_counts": [3, 12],
-    "observed_pulse_gain_range_mg": [0.0, 83.0],
+    "results": [
+      "completed",
+      "failed"
+    ],
+    "final_masses_mg": [
+      1008.0,
+      986.0
+    ],
+    "durations_s": [
+      28.625,
+      56.672
+    ],
+    "transition_sample_masses_mg": [
+      713.0,
+      706.0
+    ],
+    "transition_stable_masses_mg": [
+      819.0,
+      737.0
+    ],
+    "pulse_counts": [
+      3,
+      12
+    ],
+    "observed_pulse_gain_range_mg": [
+      0.0,
+      83.0
+    ],
     "conclusion": "tail pulsing removed the long continuous stall but pulse release remains too variable; add an upper-headroom safety gate and p370-p375 final micro stage"
   },
   "tail_pulse_safety_gate_candidate_20260825": {
@@ -141,8 +256,14 @@
     "upper_acceptance_limit_mg": 1010.0,
     "standard_pulse_guard_gain_mg": 140.0,
     "standard_pulse_guard_multiplier": 1.3,
-    "micro_window_range_units": [370, 375],
-    "micro_duration_range_s": [0.05, 0.08],
+    "micro_window_range_units": [
+      370,
+      375
+    ],
+    "micro_duration_range_s": [
+      0.05,
+      0.08
+    ],
     "micro_frequency_hz": 80,
     "micro_duty_permyriad": 1000,
     "micro_max_attempts": 16,
@@ -156,9 +277,21 @@
       "disp-batch-1sets-20260825_174957-668c53-s01r02-1000mg-80hz-22pct",
       "disp-batch-1sets-20260825_174957-668c53-s01r03-1000mg-80hz-22pct"
     ],
-    "results": ["failed-motion", "failed-underweight", "completed"],
-    "stop_or_final_masses_mg": [889.0, 951.0, 996.0],
-    "durations_s": [40.64, 54.016, 43.875],
+    "results": [
+      "failed-motion",
+      "failed-underweight",
+      "completed"
+    ],
+    "stop_or_final_masses_mg": [
+      889.0,
+      951.0,
+      996.0
+    ],
+    "durations_s": [
+      40.64,
+      54.016,
+      43.875
+    ],
     "largest_standard_pulse_gain_mg": 108.0,
     "motion_failure": "a requested p350 close stopped at p318; the next command reported LA10 result code 2",
     "conclusion": "1 of 3 passed; raise the guard to 140 mg with a 1.3 dynamic factor, allow 16 micro attempts, and require verified motion corrections"
@@ -170,5 +303,200 @@
     "mass_after_delayed_motion_mg": 783.0,
     "reported_error": "target p350, observed p318 while the actuator later reached p351",
     "conclusion": "the gateway updates target_units before mechanical motion begins; target-register equality must not be treated as motion completion"
+  },
+  "settle_gain_v1": {
+    "fast>coarse": {
+      "gain_mg": 50.0,
+      "last_gain_mg": 157.0,
+      "samples": 87,
+      "updated_at": "2026-10-29 18:21:48"
+    },
+    "coarse>slow": {
+      "gain_mg": 50.0,
+      "last_gain_mg": 51.0,
+      "samples": 21,
+      "updated_at": "2026-10-29 18:21:48"
+    }
+  },
+  "feedforward_v2": {
+    "schema": 2,
+    "points": [
+      {
+        "stir_rpm": 70.0,
+        "rod_units": 420,
+        "rate_mg_s": 4.48,
+        "cv_pct": 35.1,
+        "delta_mg": 89.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 2.11,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.6
+        },
+        "at": "2026-10-27 10:19:24"
+      },
+      {
+        "stir_rpm": 40.0,
+        "rod_units": 420,
+        "rate_mg_s": 2.85,
+        "cv_pct": 103.9,
+        "delta_mg": 155.0,
+        "duration_s": 20.0,
+        "startup_delay_s": 1.03,
+        "samples": 59,
+        "stable_after_stop": true,
+        "signal": {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.6
+        },
+        "at": "2026-10-27 10:22:14"
+      }
+    ],
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0,
+      "amplitude_vpp": 2.6
+    },
+    "updated_at": "2026-10-29 17:35:34",
+    "signals_used": [
+      {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 2.6,
+        "points": 2
+      }
+    ],
+    "signal_mixed": false,
+    "stage_stir_rpm": {
+      "coarse": 70.0,
+      "fine": 70.0,
+      "precision": 70.0
+    },
+    "summary": {
+      "rate_min_mg_s": 2.85,
+      "rate_max_mg_s": 4.48,
+      "cv_median_pct": 69.5,
+      "points": 2,
+      "stir_levels": [
+        40.0,
+        70.0
+      ],
+      "rod_range": [
+        420,
+        420
+      ],
+      "signal": {
+        "frequency_hz": 80.0,
+        "duty_percent": 50.0,
+        "amplitude_vpp": 2.6
+      },
+      "signals_used": [
+        {
+          "frequency_hz": 80.0,
+          "duty_percent": 50.0,
+          "amplitude_vpp": 2.6,
+          "points": 2
+        }
+      ],
+      "signal_mixed": false,
+      "stir_gain_pct": 57.2
+    },
+    "correction": {
+      "factor": 1.8,
+      "samples": 23,
+      "last_sample": 2.2526,
+      "last_details": [
+        {
+          "stage": "coarse",
+          "stir_rpm": 40.0,
+          "rod_units": 490.0,
+          "predicted_mg_s": 2.85,
+          "actual_mg_s": 7.64,
+          "ratio": 2.681
+        },
+        {
+          "stage": "slow",
+          "stir_rpm": 20.0,
+          "rod_units": 490.0,
+          "predicted_mg_s": 2.85,
+          "actual_mg_s": 5.2,
+          "ratio": 1.825
+        }
+      ],
+      "at": "2026-10-29 17:35:34"
+    }
+  },
+  "stage_recipe_v1": {
+    "schema": 1,
+    "source": "页面「三阶段配方」实测整表（2026-10-29 15:37–15:48 连续 6 次，其中 5 次落在 ±12mg）",
+    "target_mg": 2000,
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0
+    },
+    "calibration_amplitude_vpp": 2.6,
+    "settle_gate": {
+      "enabled": true,
+      "rate_ratio": 1.5
+    },
+    "estimated_s": 51.4,
+    "max_run_s": 173.1,
+    "stages": [
+      {
+        "stage": "fast",
+        "stage_text": "快加",
+        "enabled": true,
+        "stir_rpm": 70.0,
+        "rod_units": 490,
+        "amplitude_vpp": 2.5,
+        "rate_mg_s": 70.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1450,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "coarse",
+        "stage_text": "粗加",
+        "enabled": true,
+        "stir_rpm": 40.0,
+        "rod_units": 490,
+        "amplitude_vpp": 2.0,
+        "rate_mg_s": 35.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1850,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "slow",
+        "stage_text": "慢加",
+        "enabled": true,
+        "stir_rpm": 20.0,
+        "rod_units": 490,
+        "amplitude_vpp": 2.0,
+        "rate_mg_s": 10.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": null,
+        "settle_wait_s": null
+      }
+    ],
+    "notes": [
+      "三段搅拌 70 / 40 / 20 RPM，推杆统一 490（2026-10-29 15:37 起实测用的这一组）。",
+      "粗加搅拌由 60 降到 40 是这轮的关键改动：实测速率从 2.9~93.7mg/s 的乱跳收到 12~35mg/s，快加余料也从 244mg 中位降到 131~212mg。慢加搅拌 20 让 2.0V 基准能往下走到 1.0~1.7V 压速率。",
+      "切点 1450 / 1850 = 页面「加料 mg」列口径，后端各扣 50mg 惯性预留后实际计划切点 1400 / 1800。",
+      "2026-10-29 15:38–15:45 连续 5 次偏差 +0 / +12 / -8 / -2 / +0（用时 50~95s）；15:48:35 那次粗加搭桥，97s 只出 173mg、振幅爬到带上界 2.5V 仍不出料，人工停止。",
+      "粗加段仍是薄弱环节：搅拌 40 RPM 时偶发搭桥，需要靠振幅上界硬顶或人工干预。",
+      "预估 51.4s = 1400/70 + 400/35 + 200/10；超时上限按 ×2.2+60 口径给 173.1s（后端会重新现算）。"
+    ],
+    "updated_at": "2026-10-29 16:01:00"
+  },
+  "dispense_flags": {
+    "zero_rate_pulse": false,
+    "slow_amp_span_vpp": 1.0,
+    "note": "2026-10-29 14:33 用户定：其他粉都允许在加粉速率为 0 时走脉冲救济（踢一脚），唯独封堵剂2 不许——它起振即成团爆发，0.5s 高幅脉冲会甩出几十上百 mg。作为补偿，慢加振幅带从 基准±0.5V 放宽到 基准±1.0V（2.00V 基准 → 1.00–3.00V），让它靠连续振动把料逼出来。快加/粗加仍按 ±0.5V。",
+    "updated_at": "2026-10-29 14:33:00"
   }
 }
