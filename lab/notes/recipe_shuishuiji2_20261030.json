@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "source": "页面「三阶段配方」录入（2026-10-30 16:06 用户截图重存），目标 2000mg 的一套完整工作点",
+  "target_mg": 2000,
+  "signal": {
+    "frequency_hz": 80.0,
+    "duty_percent": 50.0
+  },
+  "calibration_amplitude_vpp": 0.3,
+  "settle_gate": {
+    "enabled": true,
+    "rate_ratio": 1.5
+  },
+  "estimated_s": 87.9,
+  "max_run_s": 253.3,
+  "stages": [
+    {
+      "stage": "fast",
+      "stage_text": "快加",
+      "enabled": true,
+      "stir_rpm": 200.0,
+      "rod_units": 480,
+      "amplitude_vpp": 2.0,
+      "rate_mg_s": 70.0,
+      "duty_percent": 50.0,
+      "switch_mass_mg": 1450,
+      "settle_wait_s": null
+    },
+    {
+      "stage": "coarse",
+      "stage_text": "粗加",
+      "enabled": true,
+      "stir_rpm": 200.0,
+      "rod_units": 480,
+      "amplitude_vpp": 1.5,
+      "rate_mg_s": 35.0,
+      "duty_percent": 50.0,
+      "switch_mass_mg": 1850,
+      "settle_wait_s": null
+    },
+    {
+      "stage": "slow",
+      "stage_text": "慢加",
+      "enabled": true,
+      "stir_rpm": 200.0,
+      "rod_units": 480,
+      "amplitude_vpp": 0.3,
+      "rate_mg_s": 10.0,
+      "duty_percent": 50.0,
+      "switch_mass_mg": 2000,
+      "settle_wait_s": null
+    }
+  ],
+  "notes": [
+    "三段搅拌全部 200 RPM（2026-10-30 16:06 页面截图）；推杆三行都是 480（= feedforward_v2 唯一标定点 50rpm/480 的开度）。",
+    "目标速率 70 / 35 / 10 mg/s，比上一版（50/20/5）整体上调；闭环靠振幅在基准 ±0.5V 内加减追，不是验收依据。",
+    "振幅基准 快加 2.00V、粗加 1.50V、慢加 0.30V（0.30V = 该粉标定振幅）。",
+    "切点 1450 / 1850 / 2000 —— 由页面「加料 mg」列提交，后端不现算；目标 2000mg 时 75% = 1500、95% = 1900，这里用的是操作者手填值。",
+    "沉降门：按段 1.5×，等待上限 8s。缓补开启（剩余 40mg 进入，0.40s/发）。",
+    "页面摘要：预计 87.9s，超时上限 253.3s。"
+  ]
+}

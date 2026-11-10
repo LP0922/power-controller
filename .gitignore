@@ -39,3 +39,7 @@ server/src/powder_sampling_control/control_panel/runs/
 
 # 粉体库别名（junction -> server/data/powder_library，避免同一批档案被跟踪两遍）
 server/data/powder_library_alias/
+
+# 粉体档案手工备份（改档案前手拍的 .bak-yyyymmdd-hhmm）与搅拌方向运行时状态
+server/data/powder_library/*.bak-*
+server/data/stir_direction.json
