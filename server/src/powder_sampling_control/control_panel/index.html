@@ -1554,7 +1554,14 @@ function render(s) {
     $("rodCur").textContent = s.rod.current;
   }
   if (s.stir) {
-    $("stirRpmNow").textContent = s.stir.rpm === null ? "–" : s.stir.rpm;
+    // 转速是带符号的：负 = 逆时针。加粉的搅拌方向现在一次一换（这次顺时针、下次逆时针），
+    // 所以这里显示绝对值 + 顺/逆，免得操作员把「-200」当成故障码。
+    const stirRpmRaw = s.stir.rpm;
+    $("stirRpmNow").textContent = stirRpmRaw === null ? "–"
+      : (Math.abs(stirRpmRaw) <= 1 ? "0"
+         : `${Math.abs(stirRpmRaw)} ${stirRpmRaw < 0 ? "逆" : "顺"}`);
+    $("stirRpmNow").title = stirRpmRaw === null ? ""
+      : (Math.abs(stirRpmRaw) <= 1 ? "静止" : (stirRpmRaw < 0 ? "逆时针" : "顺时针"));
     $("stirEn").textContent = s.stir.enabled ? "已使能" : "未使能";
     $("stirReach").textContent = s.stir.flags === null ? "–" : (FLAG_TEXT[s.stir.flags] || s.stir.flags);
     const err = s.stir.flags === null ? null : (s.stir.flags >> 2) & 0x03;

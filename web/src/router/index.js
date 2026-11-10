@@ -34,8 +34,8 @@ const routes = [
         component: () => import('../views/PowderManagement.vue'),
       },
       {
-        // 试验记录还没接：数据源就是 runs/dispense_*.json 与 runs/batch_*.json，
-        // 后端暂时没有列表接口，菜单里置灰。路由留着，以后接上直接可用。
+        // 数据源：runs/dispense_*.json（单次加粉）、batch_*.json（批量）、calib_*.json（标定），
+        // 后端 GET /api/test-records 已摊平成表格行。
         path: 'records',
         name: 'TestRecords',
         meta: { title: '试验记录', icon: 'Document' },

@@ -17,7 +17,7 @@ function integer(value, min, max, label) {
   }
 }
 
-/** 试验记录页还在用的查询参数构造（该页尚未接入目前后端，保留以免 build 断） */
+/** 试验记录页的查询参数：日期按后端约定去掉横线（YYYYMMDD），后端按文件名预筛 */
 export function recordQuery(filters) {
   const query = {}
   if (filters.type) query.test_type = filters.type
@@ -36,6 +36,7 @@ export function dispenseStageQueueItem({
   target_mg, powder, category, amplitude_vpp, tail_mass_mg,
   stages, settle_gate, settle_gate_rate_mg_s, taper_factor,
   surge_guard, surge_ratio, trim_enabled, trim_enter_remain_mg,
+  zero_rate_pulse = null,
   repeat_count = 1,
 }) {
   const target = Number(target_mg)
@@ -57,6 +58,9 @@ export function dispenseStageQueueItem({
     surge_ratio: surge_ratio ?? null,
     trim_enabled: trim_enabled ?? null,
     trim_enter_remain_mg: trim_enter_remain_mg ?? null,
+    // 断料脉冲（速率为 0 时踢不踢一脚）：跟着加粉页那个开关走，
+    // 批量里每一项都按入队时的设置执行。
+    zero_rate_pulse: zero_rate_pulse ?? null,
   }
   if (stages && stages.length) params.stages = stages
   return { type: 'dispense', typeLabel: '加粉', params }

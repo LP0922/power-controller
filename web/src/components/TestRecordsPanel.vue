@@ -12,18 +12,12 @@
         <label class="filter-label">类型</label>
         <el-select v-model="filters.type" placeholder="全部类型" size="small" clearable style="width: 170px">
           <el-option label="全部类型" value="" />
-          <el-option label="闭环加粉 100mg" value="feedback_dispense_100mg" />
-          <el-option label="闭环加粉 300mg" value="feedback_dispense_300mg" />
-          <el-option label="闭环加粉 500mg" value="feedback_dispense_500mg" />
-          <el-option label="闭环加粉（其他质量）" value="feedback_dispense" />
+          <el-option label="单次加粉 100mg" value="feedback_dispense_100mg" />
+          <el-option label="单次加粉 300mg" value="feedback_dispense_300mg" />
+          <el-option label="单次加粉 500mg" value="feedback_dispense_500mg" />
+          <el-option label="单次加粉（其他质量）" value="feedback_dispense" />
           <el-option label="批量加粉" value="dispense_batch" />
-          <el-option label="振动喂料" value="vibration_feed" />
-          <el-option label="窗口位置扫描" value="window_position_sweep" />
-          <el-option label="窗口 PID" value="window_pid_dispense" />
-          <el-option label="连续收敛" value="continuous_taper_dispense" />
-          <el-option label="定速出粉" value="constant_rate_dispense" />
-          <el-option label="定速批量" value="constant_rate_batch" />
-          <el-option label="天平漂移" value="at8811c_drift" />
+          <el-option label="速率标定" value="rate_calibration" />
         </el-select>
       </div>
       <div class="filter-item">
@@ -63,7 +57,14 @@
       </div>
     </div>
 
-    <el-alert title="后端每次最多返回200条记录；可按日期和类型缩小范围查询最新实验。" type="info" :closable="false" style="margin-bottom:14px" />
+    <el-alert
+      :title="truncated
+        ? `已返回最新 ${records.length} 条（达上限），请用日期或类型缩小范围`
+        : '数据源：runs 目录下的加粉 / 批量 / 标定记录，按开始时间倒序'"
+      :type="truncated ? 'warning' : 'info'"
+      :closable="false"
+      style="margin-bottom:14px"
+    />
     <!-- Summary stat cards -->
     <div class="summary-cards">
       <div class="summary-card">
@@ -115,9 +116,14 @@
             {{ fmt(row.final_mass_mg) }} / {{ fmt(row.avg_rate_mg_s) }}
           </template>
         </el-table-column>
+        <el-table-column label="偏差(mg)" width="90" align="center">
+          <template #default="{ row }">
+            <span :class="deltaClass(row.delta_mg)">{{ fmtDelta(row.delta_mg) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="目标/CV%" width="120" align="center">
           <template #default="{ row }">
-            {{ fmt(row.target_mg) }} / {{ fmt(row.cv_percent) }}%
+            {{ fmt(row.target_mg) }} / {{ row.cv_percent == null ? '--' : fmt(row.cv_percent) + '%' }}
           </template>
         </el-table-column>
         <el-table-column label="耗时(s)" width="80" align="center">
@@ -141,23 +147,17 @@
 <script setup>
 import { ref, computed, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getTestRecords } from '../api/index.js'
+import { getTestRecords, errorMessage } from '../api/index.js'
 import { recordQuery } from '../utils/dispense.js'
 import PanelSection from './PanelSection.vue'
 
 const typeLabelMap = {
-  feedback_dispense: '闭环加粉',
+  feedback_dispense: '单次加粉',
   dispense_batch: '批量加粉',
-  feedback_dispense_100mg: '闭环加粉(100mg)',
-  feedback_dispense_300mg: '闭环加粉(300mg)',
-  feedback_dispense_500mg: '闭环加粉(500mg)',
-  vibration_feed: '振动喂料',
-  window_position_sweep: '窗口扫描',
-  window_pid_dispense: '窗口PID',
-  continuous_taper_dispense: '连续收敛',
-  constant_rate_dispense: '定速出粉',
-  constant_rate_batch: '定速批量',
-  at8811c_drift: '天平漂移',
+  rate_calibration: '速率标定',
+  feedback_dispense_100mg: '单次加粉(100mg)',
+  feedback_dispense_300mg: '单次加粉(300mg)',
+  feedback_dispense_500mg: '单次加粉(500mg)',
 }
 
 const filters = reactive({
@@ -169,6 +169,7 @@ const filters = reactive({
 
 const records = ref([])
 const queryLoading = ref(false)
+const truncated = ref(false)
 
 const totalCount = computed(() => records.value.length)
 
@@ -197,6 +198,7 @@ async function handleQuery() {
     const params = recordQuery(filters)
 
     const data = await getTestRecords(params)
+    truncated.value = data?.truncated === true
     records.value = (Array.isArray(data) ? data : (data.records || [])).map(row => ({
       ...row,
       passed: row.status === 'passed' ? true : row.status === 'failed' ? false : row.passed,
@@ -207,8 +209,10 @@ async function handleQuery() {
       cv_percent: row.overall_cv_pct ?? row.cv_percent,
       remark: row.error || row.note || row.remark,
     }))
-  } catch (_e) {
-    ElMessage.error('查询失败')
+  } catch (error) {
+    truncated.value = false
+    records.value = []
+    ElMessage.error(errorMessage(error) || '查询失败')
   } finally {
     queryLoading.value = false
   }
@@ -230,6 +234,22 @@ function fmt(v) {
     return v.toFixed(2)
   }
   return String(v)
+}
+
+/** 偏差带正负号：+ 是加多了，- 是加少了 */
+function fmtDelta(v) {
+  if (v === undefined || v === null || v === '') return '--'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '--'
+  if (Math.abs(n) < 0.05) return '0'
+  return (n > 0 ? '+' : '') + n.toFixed(1)
+}
+
+/** 只表示误差方向（超重红 / 偏轻绿），不表示合格与否——合不合格看「结果」列 */
+function deltaClass(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n) || Math.abs(n) < 0.05) return ''
+  return n > 0 ? 'delta-over' : 'delta-under'
 }
 
 onMounted(() => {
@@ -319,5 +339,13 @@ onMounted(() => {
 .muted {
   color: #c0c4cc;
   font-size: 13px;
+}
+
+.delta-over {
+  color: #f56c6c;
+}
+
+.delta-under {
+  color: #67c23a;
 }
 </style>

@@ -45,7 +45,7 @@ DISPENSE_KEYS = (
     "category", "preset_id", "amplitude_vpp", "tail_mass_mg", "use_feedforward",
     "stages", "settle_gate", "settle_gate_rate_mg_s", "taper_factor",
     "surge_guard", "surge_ratio", "trim_enabled", "trim_enter_remain_mg",
-    "trim_pulse_target_mg",
+    "trim_pulse_target_mg", "zero_rate_pulse",
 )
 
 
@@ -214,7 +214,7 @@ class DispenseBatchRunner:
             for key in DISPENSE_KEYS:
                 if key in raw:
                     if key in ("settle_gate", "surge_guard", "trim_enabled",
-                               "use_feedforward"):
+                               "use_feedforward", "zero_rate_pulse"):
                         base[key] = _bool_or_none(raw.get(key))
                     elif key in ("stages",):
                         base[key] = raw.get(key)
@@ -262,13 +262,33 @@ class DispenseBatchRunner:
                                              powder=item.get("powder"),
                                              **payload)
                 except Exception as error:      # noqa: BLE001 - 单项起不来也要记账
-                    self._log(f"批量加粉 {tag} 启动失败：{error}")
+                    # 启动阶段也可能已经完成了部分硬件检查；不再跳过本项继续
+                    # 下一项，避免把共享硬件/天平的异常扩大成连续动作。
+                    reason = f"启动失败：{error}"
+                    self._log(f"批量加粉 {tag} {reason}，整批中止")
                     self._append_result(item, {"ok": False, "verdict": "未启动",
-                                               "stop_reason": f"启动失败：{error}"})
-                    continue
+                                               "stop_reason": reason})
+                    aborted = f"{tag}{reason}"
+                    break
 
                 stopped = self._wait_item(tag)
-                result = self._hub.dispense.status().get("result") or {}
+                dispense_status = self._hub.dispense.status()
+                result = dispense_status.get("result") or {}
+                # 任务线程异常退出时，DispenseRunner 会进入 failed 状态且不一定
+                # 能生成 result。原逻辑把这种情况当成普通“无结果”并继续下一项，
+                # 可能在设备尚未确认安全时再次启动硬件。
+                if dispense_status.get("state") == "failed" or not result:
+                    detail = dispense_status.get("detail") or "未生成加粉结果"
+                    reason = f"设备执行异常：{detail}"
+                    self._log(f"批量加粉 {tag} {reason}，整批中止")
+                    self._append_result(item, {
+                        "ok": False,
+                        "verdict": "设备异常",
+                        "stop_reason": reason,
+                    })
+                    aborted = f"{tag}{reason}"
+                    self._cancel.set()
+                    break
                 self._append_result(item, result, stopped=stopped)
                 if stopped and self._cancel.is_set():
                     aborted = "操作员停止"

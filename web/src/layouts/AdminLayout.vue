@@ -31,10 +31,10 @@
           <el-icon><Collection /></el-icon>
           <template #title>粉末管理</template>
         </el-menu-item>
-        <!-- 试验记录的数据源是 runs/*.json，目前后端还没有列表接口，先置灰 -->
-        <el-menu-item index="/records" disabled title="试验记录依赖 runs 目录的列表接口，尚未接入">
+        <!-- 数据源是 runs/*.json（dispense_/batch_/calib_），后端 GET /api/test-records -->
+        <el-menu-item index="/records">
           <el-icon><Document /></el-icon>
-          <template #title>试验记录（待接入）</template>
+          <template #title>试验记录</template>
         </el-menu-item>
       </el-menu>
     </el-aside>

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -101,6 +102,14 @@ LIFT_SPEED_RAW = 8
 #   - 平时只每 ROD_IDLE_INTERVAL_S 秒兜底读一次（防止状态僵死在旧值）。
 ROD_ACTIVE_WINDOW_S = 8.0      # 下发动作后的高频读取窗口
 ROD_IDLE_INTERVAL_S = 10.0     # 空闲时的兜底读取间隔
+# 手动「推杆微滑」（页面「推杆微滑」按钮，2026-11-09 用户要求加在「开始加粉」左边）：
+# 当前开度 → +step → −step（rounds 轮）→ 回原位，用来人工松动料口/破拱。
+# 与断料提问里的「上下滑动窗口」是同一套动作，只是这里可以随时手点。
+# 2026-11-09 18:0x 用户："就不要 +-50 了，改为 +-25 移动推杆"——按钮步长也收到 25，
+# 和加粉中自动持续微滑（dispense_runner.ROD_SWEEP_STEP_UNITS）保持一致。
+ROD_WIGGLE_STEP_UNITS = 25     # 上下各滑多少（相对当前开度）
+ROD_WIGGLE_ROUNDS = 2          # 上→下 算一轮
+ROD_WIGGLE_DWELL_S = 0.90      # 每档停留（推杆 500 单位≈0.6s，25 单位几乎瞬时）
 
 HERE = Path(__file__).resolve().parent
 
@@ -133,6 +142,200 @@ def _log_page_event(body: dict) -> dict:
     level = str(body.get("level") or "info")[:10]
     _log(f"[页面/{level}] {message}")
     return {"logged": True}
+
+
+# ----------------------------------------------------------------------
+# 试验记录（runs/*.json → 前端「试验记录」页）
+# ----------------------------------------------------------------------
+# 三类记录各写各的文件：dispense_*（单次加粉）、batch_*（批量加粉）、calib_*（速率标定）。
+# 页面只关心「一行一次结果」，字段摊平在这里做，前端不用再猜文件名的含义。
+RUN_DIR = HERE / "runs"
+TEST_RECORD_LIMIT_DEFAULT = 200
+TEST_RECORD_LIMIT_MAX = 500
+_RECORD_NAME_RE = re.compile(r"^(dispense|calib|batch)_(\d{8})_(\d{6})")
+_RECORD_TARGET_RE = re.compile(r"_(\d+)mg_")
+
+
+def _record_meta(name: str) -> tuple[str, str] | None:
+    """从文件名取 (类型, 8 位日期)。runs 里还有 CSV 与 _excluded_manual 目录，一律跳过。"""
+    match = _RECORD_NAME_RE.match(name)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _record_type_name(kind: str, name: str) -> str:
+    """记录类型：批量/标定各一类，单次加粉按目标质量拆出 100/300/500 三档。"""
+    if kind == "batch":
+        return "dispense_batch"
+    if kind == "calib":
+        return "rate_calibration"
+    match = _RECORD_TARGET_RE.search(name)
+    target = int(match.group(1)) if match else None
+    # 100/300/500mg 是页面单独列出来的三档，其余（含 2000mg 这类）都归「其他质量」
+    return f"feedback_dispense_{target}mg" if target in (100, 300, 500) else "feedback_dispense"
+
+
+def _rate_of(achieved: object, duration: object) -> float | None:
+    """平均出粉速率 = 实得 / 总耗时。总耗时含沉降等待与缓补，只作横向参考。"""
+    try:
+        if achieved is None or not duration:
+            return None
+        return round(float(achieved) / float(duration), 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _test_record_rows(kind: str, path: Path, data: dict) -> list[dict]:
+    """把一个记录文件摊平成页面表格的行（批量文件会展开成多行）。"""
+    type_name = _record_type_name(kind, path.name)
+    file_rel = f"runs/{path.name}"
+
+    if kind == "batch":
+        rows: list[dict] = []
+        for index, item in enumerate(data.get("results") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            achieved = item.get("final_mass_mg")
+            duration = item.get("duration_s")
+            passed = item.get("passed")
+            rows.append({
+                "run_id": f"{path.stem}#{item.get('row') or index}",
+                "test_type": type_name,
+                "powder_name": item.get("powder_name") or item.get("powder") or "",
+                "created_at": data.get("finished_at") or data.get("started_at") or "",
+                "status": None if passed is None else ("passed" if passed else "failed"),
+                "verdict": item.get("verdict") or "",
+                "target_mass_mg": item.get("target_mg"),
+                "final_mass_mg": achieved,
+                "delta_mg": item.get("delta_mg"),
+                "avg_rate_mg_s": _rate_of(achieved, duration),
+                "cv_percent": None,
+                "elapsed_s": duration,
+                "remark": item.get("stop_reason") or "",
+                "file": file_rel,
+            })
+        return rows
+
+    if kind == "calib":
+        summary = data.get("summary") or {}
+        points = data.get("points") or []
+        rate_min = summary.get("rate_min_mg_s")
+        rate_max = summary.get("rate_max_mg_s")
+        rate = None
+        try:
+            if rate_min is not None and rate_max is not None:
+                rate = round((float(rate_min) + float(rate_max)) / 2.0, 3)
+            elif rate_min is not None:
+                rate = float(rate_min)
+        except (TypeError, ValueError):
+            rate = None
+        duration = data.get("duration_s")
+        elapsed = None
+        try:
+            if duration:
+                elapsed = round(float(duration) * max(len(points), 1), 1)
+        except (TypeError, ValueError):
+            elapsed = None
+        ok = data.get("ok")
+        return [{
+            "run_id": path.stem,
+            "test_type": type_name,
+            "powder_name": data.get("powder") or "",
+            "created_at": data.get("finished_at") or data.get("started_at") or "",
+            "status": None if ok is None else ("passed" if ok else "failed"),
+            "verdict": "完成" if ok else "失败",
+            "target_mass_mg": None,        # 标定没有目标质量，页面显示 --
+            "final_mass_mg": None,
+            "delta_mg": None,
+            "avg_rate_mg_s": rate,
+            "cv_percent": summary.get("cv_median_pct"),
+            "elapsed_s": elapsed,
+            "remark": data.get("reason") or f"{len(points)} 个标定点",
+            "file": file_rel,
+        }]
+
+    # 单次闭环加粉
+    achieved = data.get("achieved_mg")
+    duration = data.get("duration_s")
+    ok = data.get("ok")
+    return [{
+        "run_id": path.stem,
+        "test_type": type_name,
+        "powder_name": data.get("powder") or "",
+        "created_at": data.get("finished_at") or "",
+        "status": None if ok is None else ("passed" if ok else "failed"),
+        "verdict": data.get("verdict") or "",
+        "target_mass_mg": data.get("target_mg"),
+        "final_mass_mg": achieved,
+        "delta_mg": data.get("delta_mg"),
+        "avg_rate_mg_s": _rate_of(achieved, duration),
+        "cv_percent": None,
+        "elapsed_s": duration,
+        "stir_direction_text": data.get("stir_direction_text") or "",
+        "remark": data.get("stop_reason") or "",
+        "file": file_rel,
+    }]
+
+
+def list_test_records(query: dict) -> dict:
+    """runs/*.json 的列表查询：先按文件名（类型 + 日期）预筛，命中才读 JSON。
+
+    为什么不在循环里全量 json.load：runs 里已经有一千三百多个记录，每个都带
+    samples/curve 数组，全读一遍要几百 MB 内存、几秒钟，页面每次查询都会把
+    串口轮询一起拖慢。文件名自带「8 位日期 + 目标质量」，足够做筛选。
+    单条文件坏掉只跳过它，不让整页 500。
+    """
+    want_type = (query.get("test_type") or "").strip()
+    result_filter = (query.get("result") or "").strip().lower()
+    date_from = (query.get("date_from") or "").replace("-", "").strip()
+    date_to = (query.get("date_to") or "").replace("-", "").strip()
+    try:
+        limit = int(float(query.get("limit") or TEST_RECORD_LIMIT_DEFAULT))
+    except (TypeError, ValueError):
+        limit = TEST_RECORD_LIMIT_DEFAULT
+    limit = max(1, min(limit, TEST_RECORD_LIMIT_MAX))
+
+    try:
+        # 文件名里带时间戳，字符串倒序即最新在前，不用 stat 每个文件
+        entries = sorted(RUN_DIR.glob("*.json"), key=lambda p: p.name, reverse=True)
+    except OSError as error:
+        raise RuntimeError(f"runs 目录读不出来：{error}") from error
+
+    records: list[dict] = []
+    truncated = False
+    for path in entries:
+        meta = _record_meta(path.name)
+        if meta is None:
+            continue
+        kind, stamp = meta
+        if date_from and stamp < date_from:
+            continue
+        if date_to and stamp > date_to:
+            continue
+        type_name = _record_type_name(kind, path.name)
+        if want_type:
+            # 选「闭环加粉（其他质量）」时把 100/300/500 那三档也一起带出来
+            if want_type == "feedback_dispense":
+                if not type_name.startswith("feedback_dispense"):
+                    continue
+            elif want_type != type_name:
+                continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue                      # 坏文件/半截文件：跳过，不影响其它记录
+        if not isinstance(data, dict):
+            continue
+        for row in _test_record_rows(kind, path, data):
+            if result_filter and (row.get("status") or "") != result_filter:
+                continue
+            records.append(row)
+            if len(records) >= limit:
+                truncated = True
+                return {"records": records, "total": len(records),
+                        "limit": limit, "truncated": truncated}
+    return {"records": records, "total": len(records), "limit": limit, "truncated": truncated}
 
 
 class InterlockError(RuntimeError):
@@ -168,6 +371,9 @@ class ActuatorHub:
         self._bus16_lock = threading.Lock()
         # COM11 锁：天平（独立串口）。
         self._bus11_lock = threading.Lock()
+        # 单次加粉和批量加粉共用启动仲裁；批量接口会先置 running 再异步启动首项，
+        # 没有这把锁时，单次请求可能在批量设置状态前抢先取得执行器启动权。
+        self._dispense_start_lock = threading.Lock()
         # 最近一次成功的状态缓存（轮询拿不到锁时返回它，页面不会断流）。
         self._last_status: dict = {"lift": None, "rod": None, "stir": None, "bal": None}
         # 共享串口句柄惰性创建：设备掉线/重插后自动重开，服务进程不退出。
@@ -181,6 +387,8 @@ class ActuatorHub:
         # 推杆轮询节流：直到这个时刻前都高频读；空闲时走兜底间隔。
         self._rod_active_until = 0.0
         self._rod_last_read = 0.0
+        # 手动「推杆微滑」后台线程（页面按钮，2026-11-09）：同一时刻只允许一次
+        self._rod_wiggle_thread: threading.Thread | None = None
         # 最近一次成功读到的双机状态（原始对象）+ 时刻：看门狗可直接复用，省一次总线事务。
         self._last_lift_status: list | None = None
         self._last_lift_at = 0.0
@@ -855,6 +1063,78 @@ class ActuatorHub:
                 "temp": rod.temperature_c, "current": rod.current_ma,
                 "error": rod.error_bits}
 
+    def rod_wiggle(self, step: int | None = None, rounds: int | None = None) -> dict:
+        """推杆上下轻微滑动（人工松料/破拱），滑完回原位。
+
+        用户 2026-11-09："在开始加粉左边加一个推杆上下轻微滑动的功能"——加粉卡在
+        料口不出粉时，点一下就能人工松一下，不必等断料提问、也不用去手动面板
+        一格格填位置。
+
+        安全边界：
+          · **速率标定中直接拒绝**：标定要求推杆全程锁死在标定点，滑动会毁掉这组数据；
+          · **加粉运行中允许**（这正是主要用途）：整段滑动持有 ``runner.rod_lock()``，
+            换段写推杆会等它滑完，不会出现"新段刚下发 730、滑动收尾又改回 490"；
+          · 上下都夹在 ROD_MIN_UNITS / ROD_MAX_UNITS 内，且**最后一定回原位**，
+            所以段内"推杆锁死"的硬约束不被破坏。
+        滑动放后台线程（来回 2 轮 ≈ 4s），HTTP 立即返回，页面不用干等。
+        """
+        if self.calib.running:
+            raise InterlockError("速率标定正在进行：推杆在标定期间必须锁死，不能滑动。"
+                                 "等标定结束再滑")
+        step = int(ROD_WIGGLE_STEP_UNITS if step is None else step)
+        rounds = int(ROD_WIGGLE_ROUNDS if rounds is None else rounds)
+        step = max(5, min(200, step))
+        rounds = max(1, min(5, rounds))
+        if self._rod_wiggle_thread is not None and self._rod_wiggle_thread.is_alive():
+            return {"started": False, "reason": "上一次微滑还没结束，等它滑完"}
+        # 运行中拿本段工作开度当基准（可能刚下发还没走到）；待命时读实际位置。
+        if self.dispense.running:
+            base = int(self.dispense.applied_window)
+        else:
+            with self._bus10(self.CTRL_LOCK_TIMEOUT_S):
+                base = int(self.rod.read_status().current_position)
+        up = int(min(ROD_MAX_UNITS, base + step))
+        down = int(max(ROD_MIN_UNITS, base - step))
+        if up - down < 10:
+            return {"started": False,
+                    "reason": f"推杆已在行程边界（{base}），上下都没余量可滑"}
+        plan = [base, up, down, base]
+        _log(f"推杆微滑（人工）：{base} → {up} → {down}（{rounds} 轮）→ 回 {base}"
+                  f"{'（加粉运行中，振动/搅拌保持当前状态）' if self.dispense.running else ''}")
+        thread = threading.Thread(
+            target=self._rod_wiggle_worker, args=(base, up, down, rounds),
+            name="rod-wiggle", daemon=True)
+        self._rod_wiggle_thread = thread
+        thread.start()
+        return {"started": True, "base": base, "plan": plan, "rounds": rounds,
+                "step": step, "dwell_s": ROD_WIGGLE_DWELL_S}
+
+    def _rod_wiggle_worker(self, base: int, up: int, down: int, rounds: int) -> None:
+        """后台执行推杆微滑：上、下交替 ``rounds`` 轮，最后一律回 ``base``。
+
+        整段持有 ``runner.rod_lock()``。加粉没在跑时那把锁也没人抢，一样安全。
+        """
+        runner = self.dispense
+        try:
+            with runner.rod_lock():
+                for i in range(rounds):
+                    for pos in (up, down):
+                        if self.calib.running:
+                            _log("推杆微滑中止：速率标定开始了")
+                            return
+                        try:
+                            self.rod_move(int(pos))
+                            _log(f"  微滑第 {i + 1} 轮：推杆 → {pos}")
+                        except Exception as error:      # noqa: BLE001 - 滑不动就赶紧回原位
+                            _log(f"  微滑第 {i + 1} 轮：推杆 → {pos} 失败（{error}）")
+                        time.sleep(ROD_WIGGLE_DWELL_S)
+        finally:
+            try:
+                self.rod_move(int(base))
+                _log(f"  微滑结束：推杆回到原位 {base}")
+            except Exception as error:              # noqa: BLE001
+                self._log(f"  ⚠ 微滑后推杆回 {base} 失败（{error}）——请核对开度")
+
     # ------------------------------------------------------------------
     # 旋转搅拌（ZDT）
     # ------------------------------------------------------------------
@@ -1504,39 +1784,45 @@ class ActuatorHub:
                        surge_ratio: Any = None,
                        trim_enabled: Any = None,
                        trim_enter_remain_mg: Any = None,
-                       trim_pulse_target_mg: Any = None) -> dict:
-        if self.calib.running:
-            raise InterlockError("速率标定正在运行，不能同时开始闭环加粉——请先停止标定")
-        if self.batch.running:
-            # 批量在跑时页面上的"开始加粉"必须拦住：否则手动这一项会插到队列中间，
-            # 批量线程等它结束时还会把它的结果算成队列中某一项的结果。
-            raise InterlockError("批量加粉正在运行，不能单独启动——请先停止批量")
-        try:
-            status = self.dispense.start(
-                target_mg, category=category, preset_id=preset_id,
-                amplitude_vpp=None if amplitude_vpp in (None, "") else float(amplitude_vpp),
-                tail_mass_mg=None if tail_mass_mg in (None, "") else float(tail_mass_mg),
-                powder=powder or None,
-                use_feedforward=bool(use_feedforward),
-                stages=stages or None,
-                # 切段沉降门（重粉）：页面不传就走算法默认（开、≥30mg/s、0.6×速率）
-                settle_gate=None if settle_gate in (None, "") else bool(settle_gate),
-                settle_gate_rate_mg_s=(None if settle_gate_rate_mg_s in (None, "")
-                                       else float(settle_gate_rate_mg_s)),
-                taper_factor=None if taper_factor in (None, "") else float(taper_factor),
-                # 段内超速熔断：页面不传就开（默认 2.5 倍），倍率 0 = 关
-                surge_guard=None if surge_guard in (None, "") else bool(surge_guard),
-                surge_ratio=None if surge_ratio in (None, "") else float(surge_ratio),
-                # 缓补：页面不传 trim_enabled 就跟随粉体档案；两个数值留空用算法默认
-                trim_enabled=None if trim_enabled in (None, "") else bool(trim_enabled),
-                trim_enter_remain_mg=(None if trim_enter_remain_mg in (None, "")
-                                      else float(trim_enter_remain_mg)),
-                trim_pulse_target_mg=(None if trim_pulse_target_mg in (None, "")
-                                      else float(trim_pulse_target_mg)))
-        except Exception as error:
-            _log(f"闭环加粉启动失败：{error}")
-            raise
-        return status
+                       trim_pulse_target_mg: Any = None,
+                       zero_rate_pulse: Any = None) -> dict:
+        with self._dispense_start_lock:
+            if self.calib.running:
+                raise InterlockError("速率标定正在运行，不能同时开始闭环加粉——请先停止标定")
+            if self.batch.running:
+                # 批量在跑时页面上的"开始加粉"必须拦住：否则手动这一项会插到队列中间，
+                # 批量线程等它结束时还会把它的结果算成队列中某一项的结果。
+                raise InterlockError("批量加粉正在运行，不能单独启动——请先停止批量")
+            try:
+                status = self.dispense.start(
+                    target_mg, category=category, preset_id=preset_id,
+                    amplitude_vpp=None if amplitude_vpp in (None, "") else float(amplitude_vpp),
+                    tail_mass_mg=None if tail_mass_mg in (None, "") else float(tail_mass_mg),
+                    powder=powder or None,
+                    use_feedforward=bool(use_feedforward),
+                    stages=stages or None,
+                    # 切段沉降门（重粉）：页面不传就走算法默认（开、≥30mg/s、0.6×速率）
+                    settle_gate=None if settle_gate in (None, "") else bool(settle_gate),
+                    settle_gate_rate_mg_s=(None if settle_gate_rate_mg_s in (None, "")
+                                           else float(settle_gate_rate_mg_s)),
+                    taper_factor=None if taper_factor in (None, "") else float(taper_factor),
+                    # 段内超速熔断：页面不传就开（默认 2.5 倍），倍率 0 = 关
+                    surge_guard=None if surge_guard in (None, "") else bool(surge_guard),
+                    surge_ratio=None if surge_ratio in (None, "") else float(surge_ratio),
+                    # 缓补：页面不传 trim_enabled 就跟随粉体档案；两个数值留空用算法默认
+                    trim_enabled=None if trim_enabled in (None, "") else bool(trim_enabled),
+                    trim_enter_remain_mg=(None if trim_enter_remain_mg in (None, "")
+                                          else float(trim_enter_remain_mg)),
+                    trim_pulse_target_mg=(None if trim_pulse_target_mg in (None, "")
+                                          else float(trim_pulse_target_mg)),
+                    # 断料脉冲（速率为 0 时踢一脚）：页面不传就跟随粉档；
+                    # 传 False = 这次加粉不踢脚，振幅到顶仍不出料就停下来提问。
+                    zero_rate_pulse=(None if zero_rate_pulse in (None, "")
+                                     else bool(zero_rate_pulse)))
+            except Exception as error:
+                _log(f"闭环加粉启动失败：{error}")
+                raise
+            return status
 
     def dispense_plan(self, target_mg: Any, *, powder: str | None = None,
                       category: str | None = None,
@@ -1564,14 +1850,24 @@ class ActuatorHub:
     def dispense_stop(self) -> dict:
         return self.dispense.stop("操作员停止")
 
+    def dispense_answer(self, action: Any, *, step: Any = None,
+                        rounds: Any = None) -> dict:
+        """回答「断料怎么办」的提问（raise_amp / slide_rod / stop）。
+
+        只置位、不动硬件：真正的抬振幅/滑推杆由加粉线程在阻塞点执行，
+        这样 COM10/COM9 的事务永远只有一个线程在发（和停止按钮同一套语义）。
+        """
+        return self.dispense.answer(action, step=step, rounds=rounds)
+
     # ------------------------------------------------------------------
     # 批量加粉（串行队列，见 batch_runner.py）
     # ------------------------------------------------------------------
 
     def batch_start(self, sets: Any, *, powder: Any = None,
                     tare_between_sets: Any = None) -> dict:
-        return self.batch.start(sets, powder=powder,
-                                tare_between_sets=tare_between_sets)
+        with self._dispense_start_lock:
+            return self.batch.start(sets, powder=powder,
+                                    tare_between_sets=tare_between_sets)
 
     def batch_stop(self) -> dict:
         return self.batch.stop()
@@ -1803,6 +2099,9 @@ class ControlPageHandler(BaseHTTPRequestHandler):
             "/api/dispense-plans": lambda: {"plans": []},
             # 批量加粉队列状态（第几项、每项结果、通过率）
             "/api/dispense/batch/status": HUB.batch_status,
+            # 试验记录：runs/*.json 摊平成表格行（?test_type=&date_from=YYYYMMDD&
+            # date_to=YYYYMMDD&result=passed|failed&limit=200）
+            "/api/test-records": lambda: list_test_records(query),
         }
 
         handler = get_routes.get(path)
@@ -1833,6 +2132,10 @@ class ControlPageHandler(BaseHTTPRequestHandler):
             "/api/rod/home": manual("推杆回原位", lambda body: HUB.rod_home()),
             "/api/rod/stop": lambda body: HUB.rod_stop(),
             "/api/rod/refresh": lambda body: HUB.rod_refresh(),
+            # 推杆微滑：**不走 manual 包装**——它就是为了"加粉卡住时人工松料"而加的，
+            # 运行中必须能用（方法内部自己拒绝标定期间）。
+            "/api/rod/wiggle": lambda body: HUB.rod_wiggle(
+                body.get("step"), body.get("rounds")),
             "/api/stir/start": manual("启动搅拌", lambda body: HUB.stir_start(
                 body.get("rpm", 0), body.get("acc", 0), body.get("direction", 0))),
             "/api/stir/stop": lambda body: HUB.stir_stop(
@@ -1887,7 +2190,8 @@ class ControlPageHandler(BaseHTTPRequestHandler):
                 surge_ratio=body.get("surge_ratio"),
                 trim_enabled=body.get("trim_enabled"),
                 trim_enter_remain_mg=body.get("trim_enter_remain_mg"),
-                trim_pulse_target_mg=body.get("trim_pulse_target_mg")),
+                trim_pulse_target_mg=body.get("trim_pulse_target_mg"),
+                zero_rate_pulse=body.get("zero_rate_pulse")),
             "/api/dispense/plan": lambda body: HUB.dispense_plan(
                 body["target_mg"], powder=body.get("powder"),
                 category=body.get("category"),
@@ -1898,6 +2202,10 @@ class ControlPageHandler(BaseHTTPRequestHandler):
                 settle_gate_rate_mg_s=body.get("settle_gate_rate_mg_s"),
                 taper_factor=body.get("taper_factor")),
             "/api/dispense/stop": lambda body: HUB.dispense_stop(),
+            # 断料提问的回答（页面两个按钮）：raise_amp 提振幅上限 / slide_rod 上下滑窗 /
+            # stop 停止。只置位，动作由加粉线程醒来执行（2026-11-09）。
+            "/api/dispense/answer": lambda body: HUB.dispense_answer(
+                body.get("action"), step=body.get("step"), rounds=body.get("rounds")),
             # 老版页面用语：cancel = 停止（同一个入口，停止永远允许）
             "/api/dispense/cancel": lambda body: HUB.dispense_stop(),
             # ---- 批量加粉（串行队列；每项仍是正常的一次加粉）----

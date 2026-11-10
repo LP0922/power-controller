@@ -176,6 +176,13 @@
 
     <!-- ================= 第三块：启停 ================= -->
     <div class="run-bar">
+      <!-- 推杆微滑：当前开度上下各滑 25 单位、来回 2 轮再回原位，人工松料/破拱。
+           加粉运行中也能点（卡料不出粉时正是这么用），只有速率标定期间禁用。 -->
+      <el-button size="large" :disabled="store.calibRunning || wiggleBusy"
+        :title="'推杆在当前开度上下各滑 25 单位、来回 2 轮，滑完自动回原位；用来松动料口/破拱'"
+        @click="handleWiggle">
+        {{ wiggleBusy ? '滑窗进行中…' : '推杆微滑' }}
+      </el-button>
       <el-button type="primary" size="large" :disabled="!ready" :loading="submitting" @click="start">
         开始加粉
       </el-button>
@@ -185,6 +192,21 @@
       <el-input-number v-model="repeat" :min="1" :max="20" :size="small" class="repeat"
         :disabled="locked" />
       <span class="unit">重复次数（批量里跑几遍）</span>
+      <el-divider direction="vertical" class="bar-sep" />
+      <!-- 断料脉冲开关：加粉过程中长时间速率为 0、振幅又顶到带顶时，
+           要不要踢一脚 0.5s 高幅脉冲把料震下来。关掉 = 只连续振动，
+           再不出料就直接停下来弹窗问操作员，不再自己脉冲。 -->
+      <div class="pulse-switch"
+        :class="{ off: !zeroRatePulse || pulseBlockedByPowder }"
+        :title="pulseBlockedByPowder
+          ? '该粉档案标记 zero_rate_pulse=false（不许零速率脉冲），这里打开也不会踢脚'
+          : '开：振幅到顶 + 近 4s 几乎不出料 → 踢一脚 0.5s 高幅脉冲；关：只连续振动，再不出料就弹窗问你'">
+        <el-switch v-model="zeroRatePulse" :disabled="locked || pulseBlockedByPowder" />
+        <span class="unit">断料脉冲</span>
+        <span class="pulse-hint">
+          {{ pulseBlockedByPowder ? '该粉不许' : (zeroRatePulse ? '速率为 0 踢一脚' : '速率为 0 不踢脚') }}
+        </span>
+      </div>
       <span class="run-state">{{ runText }}</span>
     </div>
 
@@ -239,6 +261,51 @@
         </div>
       </div>
     </div>
+
+    <!-- ============ 断料提问：停振停搅拌，等操作员二选一（2026-11-09） ============
+         后端在"振幅到顶 + 踢脚到顶 + 连续 10s 净增 <2mg"时会把振动和搅拌都停掉，
+         把这个 ask 挂到状态里；这里弹窗给两个处理方式，选完由加粉线程接着加。 -->
+    <el-dialog
+      :model-value="!!ask" width="600px" :show-close="false"
+      :close-on-click-modal="false" :close-on-press-escape="false"
+      title="加不进去了：请选择处理方式" append-to-body>
+      <div v-if="ask" class="ask-box">
+        <p class="ask-head">
+          <b class="bad">{{ ask.stage_text }}</b> 段停在
+          <b>{{ ask.mass_mg }}</b> / {{ ask.target_mg }} mg（还差 {{ ask.remain_mg }} mg）
+        </p>
+        <p class="ask-sub">
+          振幅已经到顶、踢脚也踢到顶，净重还是不见涨：{{ ask.why }}<br />
+          <b>现在已经停振、停搅拌，机构保持原位</b>；选好之后会重新开闸接着加。
+          第 {{ ask.count }} / {{ ask.max_count }} 次提问，{{ ask.timeout_s }}s 不选按「停止加粉」处理。
+        </p>
+        <div class="ask-options">
+          <div class="ask-option" :class="{ disabled: answering }">
+            <div class="opt-title">① 提高振幅上限，继续加振幅</div>
+            <div class="opt-body">
+              连续振幅带 {{ ask.amp_band?.[1]?.toFixed(2) }} → {{ ask.amp_after_raise_vpp?.toFixed(2) }} Vpp，
+              踢脚硬顶 {{ ask.amp_cap_vpp?.toFixed(2) }} → {{ ask.amp_cap_after_raise_vpp?.toFixed(2) }} Vpp
+              （每次 +{{ ask.amp_raise_step_vpp }}V）
+            </div>
+            <el-button type="primary" :loading="answering" :disabled="answering"
+              @click="answerAsk('raise_amp')">提高振幅上限继续加</el-button>
+          </div>
+          <div class="ask-option" :class="{ disabled: answering }">
+            <div class="opt-title">② 上下滑动推杆窗口，破拱</div>
+            <div class="opt-body">
+              推杆 {{ ask.rod_units }} → {{ ask.rod_slide_plan?.[0] }} →
+              {{ ask.rod_slide_plan?.[1] }} → 回 {{ ask.rod_units }}
+              （±{{ ask.rod_slide_step }} 单位 × {{ ask.rod_rounds }} 轮）
+            </div>
+            <el-button type="success" :loading="answering" :disabled="answering"
+              @click="answerAsk('slide_rod')">上下滑动窗口</el-button>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button :disabled="answering" @click="answerAsk('stop')">停止加粉</el-button>
+      </template>
+    </el-dialog>
   </PanelSection>
 </template>
 
@@ -248,7 +315,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useDeviceStore } from '../stores/device.js'
 import {
   getDispensePowders, getDispenseConfig, startDispense, cancelDispense,
-  tareBalance, errorMessage,
+  answerDispense, tareBalance, wiggleRod, errorMessage,
 } from '../api/index.js'
 import { dispenseStageQueueItem } from '../utils/dispense.js'
 import { useBatchQueue } from '../composables/useBatchQueue.js'
@@ -283,6 +350,13 @@ const surgeRatio = ref(2.5)
 const trimEnabled = ref(false)
 const trimEnter = ref(null)
 
+// 断料脉冲（2026-11-09 用户要求做成按钮）：加粉过程中长时间速率为 0 时，
+// 振幅顶到带顶仍不出料要不要踢一脚 0.5s 高幅脉冲。
+// 默认开（和原来的行为一致）；关掉后振幅只连续振动，再不出料就弹窗问操作员。
+const PULSE_KEY = 'powder.dispense.zero_rate_pulse'
+const zeroRatePulse = ref(localStorage.getItem(PULSE_KEY) !== '0')
+watch(zeroRatePulse, (on) => localStorage.setItem(PULSE_KEY, on ? '1' : '0'))
+
 const plan = ref(null)
 const planError = ref('')
 const submitting = ref(false)
@@ -311,11 +385,41 @@ const running = computed(() => store.dispenseRunning)
 const locked = computed(() => running.value || store.calibRunning || submitting.value)
 const ready = computed(() => !locked.value && Number.isInteger(target.value) && target.value >= 100)
 
+// 粉档封锁：封堵剂2 这类粉在档案里标了 zero_rate_pulse=false（起振即成团爆发），
+// 页面开关只能"关"不能强行"开"——后端也会再拦一次，这里仅用于把话说清楚。
+const pulseBlockedByPowder = computed(() => {
+  const stages = plan.value?.plan || []
+  return stages.some((s) => s.zero_rate_pulse === false)
+})
+
+// ── 断料提问（2026-11-09）：后端停振停搅拌挂出两个选项，这里弹窗回答 ──────────
+const ask = computed(() => store.dispense.ask || null)
+const answering = ref(false)
+
+async function answerAsk(action) {
+  if (answering.value) return
+  answering.value = true
+  try {
+    await answerDispense(action)
+    const text = action === 'raise_amp' ? '已提高振幅上限，继续加粉'
+      : action === 'slide_rod' ? '已开始上下滑窗，破拱后接着加'
+        : '已停止加粉'
+    ElMessage.success(text)
+  } catch (e) {
+    ElMessage.error(errorMessage(e) || '操作失败')
+  } finally {
+    answering.value = false
+  }
+}
+
 const displayTarget = computed(() => store.dispenseConfig.target_mg ?? target.value)
-const statusLabel = computed(() => (running.value ? '运行中' : '待命'))
+const statusLabel = computed(() => {
+  if (store.dispense.state === 'waiting') return '等待选择'
+  return running.value ? '运行中' : '待命'
+})
 const stateText = computed(() => ({
   done: '上次已完成', aborted: '上次中止', cancelled: '上次已停止',
-  idle: '空闲', running: '加粉中', settling: '结算中',
+  idle: '空闲', running: '加粉中', settling: '结算中', waiting: '等待操作员选择',
 }[store.dispense.state] || '空闲'))
 const runText = computed(() => store.dispense.detail || '空闲')
 
@@ -439,8 +543,16 @@ const ampBandHint = computed(() => {
     return `${STAGE_TEXT[s.stage]} ${lo}–${hi}V${tag}`
   })
   const noPulse = items.some((s) => s.zero_rate_pulse === false)
+  // 加粉中持续微滑（粉档 dispense_flags.rod_sweep，目前只有大分子包被剂）：
+  // 推杆在振动不停的情况下每隔几秒上下各动 step 单位，滑完回原位，工作开度不变。
+  const sweep = items.find((s) => s.rod_sweep && Number(s.rod_sweep.step) > 0)
+  const sweepTip = sweep
+    ? `｜该粉加粉中推杆持续微滑 ±${Number(sweep.rod_sweep.step).toFixed(0)}`
+      + `（每 ${Number(sweep.rod_sweep.interval_s).toFixed(0)}s 上下各一次，振动不停，滑完回原位、开度不变）`
+    : ''
   return `振幅闭环带：${parts.join('　')}`
     + (noPulse ? '｜该粉标记：不许在加粉速率为 0 时脉冲（顶上不踢脚）' : '')
+    + sweepTip
 })
 
 const curveSvg = computed(() => {
@@ -629,6 +741,7 @@ function buildPayload() {
     trim_enabled: trimEnabled.value,
     trim_enter_remain_mg: trimEnabled.value ? (trimEnter.value ?? null) : null,
     trim_pulse_target_mg: null,
+    zero_rate_pulse: zeroRatePulse.value,
   }
 }
 
@@ -671,12 +784,17 @@ async function start() {
   const trimText = trimEnabled.value
     ? `缓补：开（慢加剩 ≤${trimEnter.value ?? 40}mg 停连续振动，改 0.40s 真脉冲，只调振幅）\n`
     : '缓补：关（慢加直接判停收尾；收尾偏轻时仍按慢加行振幅定幅补差，补进验收带就停）\n'
+  const pulseText = pulseBlockedByPowder.value
+    ? '断料脉冲：该粉档案禁用（速率为 0 也不踢脚，振幅顶到带顶就停下来问你）\n'
+    : zeroRatePulse.value
+      ? '断料脉冲：开（速率为 0 + 振幅到顶仍不出料 → 踢一脚 0.5s 高幅脉冲）\n'
+      : '断料脉冲：关（速率为 0 只连续振动，振幅顶到带顶就停下来问你）\n'
 
   try {
     await ElMessageBox.confirm(
       `开始闭环加粉：目标 ${target.value} mg\n`
       + `粉末：${powderName.value || '（不选粉，纯闭环）'}\n${brief}\n`
-      + `${gateText}${surgeText}${trimText}\n`
+      + `${gateText}${surgeText}${trimText}${pulseText}\n`
       + '推杆整段锁死、收尾不复位。运行中请勿手动操作振动/推杆/升降/搅拌。'
       + slowWarn + '\n\n确认机构周围安全后继续？',
       '开始加粉', { type: 'warning', customClass: 'pre-wrap' })
@@ -702,6 +820,30 @@ async function tare() {
   try { await tareBalance(); ElMessage.success('天平已标零') } catch (error) { fail(error) }
 }
 
+// ── 推杆微滑（人工松料/破拱）────────────────────────────────────────────
+// 后端在后台线程里滑，接口立刻返回；这里按"来回 2 轮 × 2 档 × 0.9s + 行程"
+// 估个冷却时间，期间按钮显示进行中，避免连点。
+const wiggleBusy = ref(false)
+let wiggleTimer = null
+
+async function handleWiggle() {
+  try {
+    const data = await wiggleRod()
+    if (!data?.started) {
+      ElMessage.info(data?.reason || '这次没有滑动')
+      return
+    }
+    const plan = (data.plan || []).join(' → ')
+    ElMessage.success(`推杆微滑：${plan}（${data.rounds} 轮）`)
+    wiggleBusy.value = true
+    clearTimeout(wiggleTimer)
+    wiggleTimer = setTimeout(() => { wiggleBusy.value = false },
+      (data.rounds * 2 * (data.dwell_s || 0.9) + 2.5) * 1000)
+  } catch (error) {
+    fail(error)
+  }
+}
+
 function enqueue() {
   try {
     const item = dispenseStageQueueItem({ ...buildPayload(), repeat_count: repeat.value })
@@ -720,7 +862,7 @@ function enqueue() {
 watch(target, () => schedulePreview(true))
 watch([settleGate, gateRate, taperFactor, surgeGuard, surgeRatio, trimEnabled, trimEnter],
   () => schedulePreview(false))
-onUnmounted(() => { clearTimeout(previewTimer) })
+onUnmounted(() => { clearTimeout(previewTimer); clearTimeout(wiggleTimer) })
 onMounted(() => { loadPowders(); store.startPolling(500) })
 </script>
 
@@ -736,6 +878,17 @@ onMounted(() => { loadPowders(); store.startPolling(500) })
 .row :deep(.el-button + .el-button) { margin-left: 0; }
 .grow { flex: 1; min-width: 120px; }
 .unit { font-size: 12px; color: #8b9aab; white-space: nowrap; }
+/* 断料脉冲开关：做成一个独立小胶囊，和按钮组/重复次数区分开 */
+.bar-sep { height: 20px; margin: 0 2px; }
+.pulse-switch {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 3px 11px; border: 1px solid #d7e2ee; border-radius: 999px;
+  background: #f6fafd;
+}
+.pulse-switch.off { background: #fbfbfc; border-color: #e6e9ef; }
+.pulse-switch .unit { color: #4b6076; }
+.pulse-hint { font-size: 11px; color: #7b8b9f; }
+.pulse-switch.off .pulse-hint { color: #a9b5c2; }
 .powder-info { margin: 4px 0 0 92px; font-size: 12px; color: #8294a8; line-height: 1.6; }
 
 .stage-block { margin-top: 24px; padding-top: 20px; border-top: 1px solid #eef1f6; }
@@ -789,8 +942,24 @@ onMounted(() => { loadPowders(); store.startPolling(500) })
 .muted { color: #93a1b3; }
 .curve { margin-top: 10px; }
 
+/* 断料提问弹窗（2026-11-09） */
+.ask-box { font-size: 13px; color: #46596f; line-height: 1.8; }
+.ask-head { margin: 0 0 6px; font-size: 15px; }
+.ask-head b { font-size: 16px; }
+.ask-sub { margin: 0 0 14px; font-size: 12.5px; color: #5b6e85; line-height: 1.9; }
+.ask-options { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.ask-option {
+  border: 1px solid #e2e9f3; border-radius: 10px; padding: 12px 14px 14px;
+  background: #fbfcfe; display: flex; flex-direction: column; gap: 8px;
+}
+.ask-option.disabled { opacity: 0.6; }
+.opt-title { font-weight: 600; font-size: 13.5px; color: #1f3550; }
+.opt-body { font-size: 12px; color: #6b7f96; line-height: 1.8; flex: 1; }
+.ask-option :deep(.el-button) { width: 100%; }
+
 @media (max-width: 1200px) {
   .setup-grid { grid-template-columns: 1fr; gap: 8px; }
   .monitor-grid { grid-template-columns: 1fr; }
+  .ask-options { grid-template-columns: 1fr; }
 }
 </style>

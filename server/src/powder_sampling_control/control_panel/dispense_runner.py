@@ -96,10 +96,74 @@ from powder_sampling_control.control_panel.powder_feedforward import (
 
 RUN_DIR = Path(__file__).resolve().parent / "runs"
 
+# ── 搅拌换向：一次加粉顺时针、下一次逆时针（2026-10-30 用户定）──────────────
+# 为什么换向：同方向连续转，粉会被持续推向腔体同一侧、贴着壁面压实，搭桥和挂料
+# 多半就是这么攒出来的。交替方向让粉在腔里来回翻动。
+#
+# 存档 `server/data/stir_direction.json` 里记的是"**下一次**加粉该用哪个方向"。
+# 每次**真正起转前**读它、并立刻把"下一次"翻成反方向——所以哪怕这次加粉中途被
+# 取消，下次也一定是反方向，不会连着两次同向。
+# 手动面板的「搅拌启动」不参与交替：那是操作员自己在下拉框里选方向，谁选谁负责。
+STIR_DIR_STATE_PATH = Path(__file__).resolve().parents[3] / "data" / "stir_direction.json"
+STIR_DIR_CW = 0        # 顺时针（驱动方向字节 0，与手动面板下拉框第一项一致）
+STIR_DIR_CCW = 1       # 逆时针
+STIR_DIR_TEXT = {STIR_DIR_CW: "顺时针", STIR_DIR_CCW: "逆时针"}
+
+
+def flip_stir_direction(direction: int) -> int:
+    """0↔1：顺时针转成逆时针、逆时针转成顺时针。"""
+    return STIR_DIR_CCW if int(direction) == STIR_DIR_CW else STIR_DIR_CW
+
+
+def peek_stir_direction(path: Path = STIR_DIR_STATE_PATH) -> int:
+    """读"下一次加粉该用的搅拌方向"。
+
+    文件缺失/内容损坏一律按顺时针起步——宁可先转起来，也不能因为一个存档读不出来
+    就让加粉起不了搅拌。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        value = int((data or {}).get("next_direction", STIR_DIR_CW))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return STIR_DIR_CW
+    return STIR_DIR_CCW if value == STIR_DIR_CCW else STIR_DIR_CW
+
+
+def take_stir_direction(path: Path = STIR_DIR_STATE_PATH) -> int:
+    """取出**本次加粉**的搅拌方向，并把存档翻成"下一次"用的反方向。
+
+    返回 STIR_DIR_CW(0) 顺时针 / STIR_DIR_CCW(1) 逆时针。
+    存档写不进去不影响本次加粉：方向照常返回，只是下一次未必翻转（写失败静默，
+    调用方照常写日志，现场从日志里看得到实际用了哪个方向）。
+    """
+    direction = peek_stir_direction(path)
+    nxt = flip_stir_direction(direction)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "next_direction": nxt,
+            "next_text": STIR_DIR_TEXT[nxt],
+            "last_used_direction": direction,
+            "last_used_text": STIR_DIR_TEXT[direction],
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)     # 原子替换：中途被杀也不会留下半点文件
+    except OSError:
+        pass
+    return direction
+
 # 三个阶段，顺序就是执行顺序。note：这是"段"的名字，控制器内部分支另有 mode
 STAGE_ORDER = ("fast", "coarse", "slow")
 STAGE_TEXT = {"fast": "快加", "coarse": "粗加", "slow": "慢加", "settle": "收尾判停",
               "trim": "缓补", "gate": "沉降等待", "surge": "超速熔断"}
+# 断料提问的两个选项（页面按钮文字 / 日志用同一套口径）
+ASK_TEXT = {
+    "raise_amp": "提高振幅上限继续加粉",
+    "slide_rod": "上下滑动推杆窗口",
+    "stop": "停止加粉",
+}
 # 段名 → 控制器分支（dispensing_algorithm 里只有 coarse/fine/precision 三档脾气）
 STAGE_MODE = {"fast": "coarse", "coarse": "fine", "slow": "precision"}
 STAGE_NOTE = {
@@ -314,11 +378,35 @@ AMP_HEARTBEAT_S = 5.0
 # 振幅"暂不调整"的原因日志限流 s（数据不足这类每轮都会发生，不刷屏）
 AMP_SKIP_LOG_S = 15.0
 # 断料兜底（2026-10-26 11:17 事故的延伸）：振幅已经到顶、踢脚也踢到顶仍不出料之后，
-# 继续空转毫无意义——旧版会一直挂到 `_max_run_s`（大目标时是十几分钟）。现在只要
-# 「已饱和 + 连续 30s 净重没涨 2mg」就主动中止并说明原因，操作员不用盯着一个不动的
-# 面板猜"是不是死了"。
-STALL_ABORT_S = 30.0
+# 继续空转毫无意义——旧版会一直挂到 `_max_run_s`（大目标时是十几分钟）。
+# 2026-11-09 10:51 那次加粉（2000mg 失水剂2，慢加 108s 质量一动没动）之后改成本现在这套：
+# 「已饱和 + 连续 STALL_ASK_S 秒净重没涨」→ **停振停搅拌，挂出两个选项等操作员选**，
+# 而不是自己默默中止。用户 2026-11-09 原话："继续加振幅，或者你可以停止加粉给我两个
+# 选项，是否提高振幅上限继续加振幅，还是上下滑动窗口（比如现在是 500，上滑 +50、
+# 下滑 -50，也就是 550、450，再回到 500）"。
+STALL_ABORT_S = 30.0            # 无人值守时的兜底中止（现在只在"拒绝回答"路径用）
 STALL_ABORT_GAIN_MG = 2.0
+STALL_ASK_S = 10.0              # 饱和后连续这么多秒净增 <2mg → 停下来提问
+STALL_ASK_TIMEOUT_S = 300.0     # 等操作员回答的上限（5 分钟），超时按"停止"收场
+STALL_ASK_MAX = 4               # 一次加粉最多问几次（防止无限来回）
+AMP_CAP_RAISE_STEP_V = 0.50     # 「提高振幅上限」每次抬 0.5V（连续带顶 + 踢脚硬顶一起抬）
+ROD_SLIDE_STEP_UNITS = 25       # 「上下滑窗」相对当前开度上下各滑 25 单位（2026-11-09 由 50 收到 25）
+ROD_SLIDE_ROUNDS = 2            # 上→下 算一轮，默认来回 2 轮再回原位
+ROD_SLIDE_WAIT_S = 0.90         # 每滑一档后停留的时间（推杆 500 单位≈0.6s，25 单位几乎瞬时）
+
+# ── 加粉中的「持续微滑」（2026-11-09 18:0x 用户）──────────────────────────────
+# 用户原话："对于这个包被剂，你做一个操作，在他加粉的时候持续进行推杆的移动，
+# 就不要 +-50 了，改为 +-25 移动推杆"。
+# 和上面「上下滑窗」的区别：滑窗是停振后人工选的一次性破拱（±50、2 轮）；
+# 这个是**振动开着的时候**每隔 interval 秒自动抬 25 / 压 25 再回原位——持续扰动
+# 料拱，防大分子包被剂在料口压实搭桥。推杆**工作开度不变**（滑完一定回 base），
+# 所以"本段开度锁死"的硬约束仍然成立，动的只是瞬时位置。
+# 只在粉档 ``dispense_flags.rod_sweep`` 显式开启的粉上生效（目前只有大分子包被剂），
+# 别的粉不受影响。step=0 或没配这一段 = 完全不做。
+ROD_SWEEP_STEP_UNITS = 25       # 相对本段开度上下各滑多少单位（用户定的 25，不是 50）
+ROD_SWEEP_INTERVAL_S = 4.0      # 两次微滑之间的间隔
+ROD_SWEEP_DWELL_S = 0.30        # 每档停留（25 单位≈0.03s 行程，停 0.3s 是给料流一点响应）
+ROD_SWEEP_KEEP_OFF_MG = 50.0    # 离切点/目标还剩这么多 mg 就不再滑（收口时别扰动料流）
 
 # ── 段内超速熔断（2026-10-26 11:33 用户："有时候 200mg 加粉会出现一短时间内加的速率
 # 非常快的情况……最近几次没触发脉冲而且还都超重"）────────────────────────────
@@ -573,9 +661,11 @@ def _amp_band_for(spec: "StagePlan") -> tuple[float, float]:
 def _powder_flags(workspace: Any) -> dict:
     """取档案里的加粉标记段 ``dispense_flags``（没有/格式不对就给空 dict）。
 
-    目前认两个键（2026-10-29 用户定，只给封堵剂2 用）：
+    目前认三个键（前两个 2026-10-29 用户定，只给封堵剂2 用）：
       · ``zero_rate_pulse``（bool，默认 True）：速率为 0 时允不允许踢脚脉冲救济。
       · ``slow_amp_span_vpp``（float，默认 None=0.5）：慢加振幅带半宽。
+      · ``rod_sweep``（dict，默认无=不滑，2026-11-09 只给大分子包被剂用）：
+        加粉过程中持续微滑推杆破拱，``{"step": 25, "interval_s": 4.0, "dwell_s": 0.3}``。
     """
     raw = getattr(workspace, "raw", None) if workspace is not None else None
     flags = (raw or {}).get("dispense_flags")
@@ -609,6 +699,12 @@ class StagePlan:
     # 震开料桥，封堵剂2 起振即成团爆发，脉冲只会甩出一大坨，所以改成靠放宽后的
     # 振幅带（连续振动）把料逼出来。False = 该段完全不踢脚。
     zero_rate_pulse: bool = True
+    # 加粉中「持续微滑」推杆（2026-11-09 用户，只给大分子包被剂用）：
+    # step=0 = 本段不做。开度基准仍是 rod_ff，微滑只是周期性 ±step 的瞬时扰动，
+    # 每次滑完必回 base —— 不改变"本段开度锁死"这个语义。
+    rod_sweep_step: int = 0
+    rod_sweep_interval_s: float = ROD_SWEEP_INTERVAL_S
+    rod_sweep_dwell_s: float = ROD_SWEEP_DWELL_S
     settle_wait_s: float | None = None   # 本段切出时等余料落完的上限 s（None=默认，0=不等）
     switch_compensation_mg: float = 0.0  # 切换点已按学到的惯性落料量提前了多少 mg
     control_note: str = ""
@@ -637,6 +733,11 @@ class StagePlan:
             "amplitude_span_vpp": (None if self.amp_span_vpp is None
                                    else round(float(self.amp_span_vpp), 2)),
             "zero_rate_pulse": bool(self.zero_rate_pulse),
+            # 加粉中持续微滑（None = 这一段不滑）：页面据此显示"这一段推杆每 4s 上下 ±25"
+            "rod_sweep": (None if not self.rod_sweep_step else {
+                "step": int(self.rod_sweep_step),
+                "interval_s": round(float(self.rod_sweep_interval_s), 2),
+                "dwell_s": round(float(self.rod_sweep_dwell_s), 2)}),
             "amp_explicit": bool(self.amp_explicit),
             "settle_wait_s": (None if self.settle_wait_s is None else round(self.settle_wait_s, 2)),
             "switch_compensation_mg": round(float(self.switch_compensation_mg), 1),
@@ -706,6 +807,9 @@ class DispenseRunner:
         self._log = log
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        # 计划解析和启动前硬件自检都可能耗时；这些步骤完成前也必须先
+        # 占住运行权，避免并发 HTTP 请求各自通过 idle 检查后启动两条线程。
+        self._start_claimed = False
         self._stop_event = threading.Event()
         self._state = "idle"          # idle/preparing/running/settling/done/aborted/failed
         self._detail = "尚未运行"
@@ -725,6 +829,8 @@ class DispenseRunner:
         self._applied_duty = 0
         self._applied_window = 0
         self._applied_stir = 0.0
+        # 本次加粉的搅拌方向（0 顺时针 / 1 逆时针）：一次一换，见 `_stir_dir`
+        self._stir_direction: int | None = None
         self._applied_amp = 0.0
         self._amp_last_write_s = 0.0    # 上次写振幅的时刻（响应等待窗起点）
         self._amp_wait_s = AMP_CTRL_MIN_EVAL_S   # 本步写完后要等多久再评估
@@ -779,6 +885,12 @@ class DispenseRunner:
         self._amp_cmd = 0.0                 # 振幅环当前目标速率 mg/s
         self._amp_detail = ""               # 振幅环最近一拍的判定原因
         self._kick_count = 0                # 本次加粉累计踢脚次数
+        # 「断料脉冲」开关（2026-11-09 用户要求做成页面按钮）：
+        # `_zero_rate_pulse_page` = 页面这一次给的（None = 没给，跟随粉档）；
+        # `_zero_rate_pulse_powder` = 粉档 dispense_flags.zero_rate_pulse 的原值。
+        # 生效规则：页面只能**收紧**（页面关 = 一定不踢），不能强行放开粉档封锁。
+        self._zero_rate_pulse_page: bool | None = None
+        self._zero_rate_pulse_powder = True
         self._t0 = 0.0
         self._max_run_s = self.MAX_RUN_S
         self._internal_stop = ""
@@ -798,6 +910,23 @@ class DispenseRunner:
         self._taper_prev_amp: float | None = None  # 降幅前的工作振幅（断料要能退回去）
         self._stall_abort_ref = 0.0           # 断料兜底：参考质量
         self._stall_abort_s = 0.0             # 断料兜底：参考时刻
+        # 断料提问（2026-11-09）：停下来让操作员二选一（提振幅上限 / 滑推杆窗口）
+        self._amp_extra_vpp = 0.0             # 「提高振幅上限」累计抬升量（连续带顶+踢脚硬顶一起抬）
+        self._ask: dict | None = None         # 正在等回答的问题（页面据此弹窗）
+        self._ask_seq = 0                     # 提问序号（第几次问）
+        self._ask_count = 0                   # 本次加粉一共问了几次
+        self._ask_answer: dict | None = None  # 操作员的选择
+        self._ask_event = threading.Event()   # 有新回答就置位
+        self._ask_lock = threading.Lock()     # 保护 _ask / _ask_answer
+        # 手动「推杆微滑」（页面按钮，2026-11-09 用户：加粉中卡料时人工松一下）：
+        # 滑动期间持有这把锁，换段写推杆要先等它结束——否则滑动收尾"回原位"
+        # 会把新段刚下发的开度顶回旧值。
+        self._rod_wiggle_lock = threading.Lock()
+        # 加粉中「持续微滑」（2026-11-09 用户：这个包被剂加粉时持续 ±25 动推杆）：
+        # 下一次该滑的时刻（按本次加粉的 elapsed 计）与已滑次数。参数在每段
+        # StagePlan 里（粉档 dispense_flags.rod_sweep → _build_plan）。
+        self._rod_sweep_next_s = -1.0
+        self._rod_sweep_count = 0
         # 段内超速熔断（2026-10-26 11:33）：开关/倍率/计数/最近一次时刻/事件留档
         self._surge_on = SURGE_GUARD_ON
         self._surge_ratio = SURGE_RATE_RATIO
@@ -813,8 +942,26 @@ class DispenseRunner:
 
     @property
     def running(self) -> bool:
-        """是否正在占用硬件（preparing 也算：那会儿已经在动推杆/搅拌）。"""
-        return self._state in ("preparing", "running", "settling")
+        """是否正在占用硬件（preparing 也算：那会儿已经在动推杆/搅拌）。
+
+        ``waiting`` = 断料提问挂着、等操作员回答。这段时间硬件没动（振动和搅拌都停了），
+        但任务没结束：页面必须继续当成"运行中"（否则「停止」按钮和整页锁定都会松开，
+        操作员还能去点手动面板跟这次加粉抢串口）。
+        """
+        return self._start_claimed or self._state in ("preparing", "running",
+                                                      "settling", "waiting")
+
+    @property
+    def applied_window(self) -> int:
+        """本段正在用的推杆开度（手动滑推杆的基准就取这个值）。"""
+        return int(self._applied_window)
+
+    def rod_lock(self):
+        """手动滑推杆用的互斥锁：调用方 ``with runner.rod_lock():`` 包住整段滑动。
+
+        换段下发推杆时也拿这把锁，所以「滑动中换段」不会互相把开度写乱。
+        """
+        return self._rod_wiggle_lock
 
     def status(self) -> dict:
         with self._lock:
@@ -827,6 +974,8 @@ class DispenseRunner:
                 "result": self._result,
                 "plan": [stage.to_dict() for stage in self._plan],
                 "stages": list(self._stage_log),
+                # 断料提问（有值时页面弹窗给两个选项）；硬件此刻是停着的
+                "ask": dict(self._ask) if self._ask else None,
             }
         return payload
 
@@ -868,6 +1017,74 @@ class DispenseRunner:
         trim_enabled: bool | None = None,
         trim_enter_remain_mg: float | None = None,
         trim_pulse_target_mg: float | None = None,
+        zero_rate_pulse: bool | None = None,
+    ) -> dict:
+        """原子取得单次任务运行权，再执行完整的启动流程。"""
+        with self._lock:
+            if self.running:
+                raise RuntimeError(f"已有加粉任务在运行（{self._state}），请先停止")
+            previous_state = self._state
+            previous_detail = self._detail
+            previous_thread = self._thread
+            self._start_claimed = True
+            self._state = "preparing"
+            self._detail = "启动校验中"
+            self._stop_event.clear()
+            self._internal_stop = ""
+        try:
+            result = self._start_impl(
+                target_mg,
+                category=category,
+                preset_id=preset_id,
+                amplitude_vpp=amplitude_vpp,
+                tail_mass_mg=tail_mass_mg,
+                powder=powder,
+                use_feedforward=use_feedforward,
+                stages=stages,
+                settle_gate=settle_gate,
+                settle_gate_rate_mg_s=settle_gate_rate_mg_s,
+                taper_factor=taper_factor,
+                surge_guard=surge_guard,
+                surge_ratio=surge_ratio,
+                trim_enabled=trim_enabled,
+                trim_enter_remain_mg=trim_enter_remain_mg,
+                trim_pulse_target_mg=trim_pulse_target_mg,
+                zero_rate_pulse=zero_rate_pulse,
+            )
+        except Exception:
+            with self._lock:
+                self._start_claimed = False
+                # 只有新线程尚未创建时，才恢复上一次已完成任务的状态；
+                # 若线程已接管，保留其 failed/aborted 状态，避免掩盖故障。
+                if self._thread is previous_thread:
+                    self._state = previous_state
+                    self._detail = previous_detail
+            raise
+        else:
+            with self._lock:
+                self._start_claimed = False
+            return result
+
+    def _start_impl(
+        self,
+        target_mg: Any,
+        *,
+        category: str | None = None,
+        preset_id: str | None = None,
+        amplitude_vpp: float | None = None,
+        tail_mass_mg: float | None = None,
+        powder: str | None = None,
+        use_feedforward: bool = True,
+        stages: list[dict] | None = None,
+        settle_gate: bool | None = None,
+        settle_gate_rate_mg_s: float | None = None,
+        taper_factor: float | None = None,
+        surge_guard: bool | None = None,
+        surge_ratio: float | None = None,
+        trim_enabled: bool | None = None,
+        trim_enter_remain_mg: float | None = None,
+        trim_pulse_target_mg: float | None = None,
+        zero_rate_pulse: bool | None = None,
     ) -> dict:
         """校验参数 → 定阶段计划 → 起线程。真正的硬件动作都在线程里。
 
@@ -878,8 +1095,6 @@ class DispenseRunner:
 
         ``powder`` 为空时退化成"纯闭环 + 预设种子"，搅拌不参与（转速 0）。
         """
-        if self.running:
-            raise RuntimeError(f"已有加粉任务在运行（{self._state}），请先停止")
         r = self._resolve(target_mg, category=category, preset_id=preset_id,
                           amplitude_vpp=amplitude_vpp, tail_mass_mg=tail_mass_mg,
                           powder=powder, use_feedforward=use_feedforward, stages=stages)
@@ -926,6 +1141,19 @@ class DispenseRunner:
         trim_raw = (workspace.raw or {}).get("trim_pulse") if workspace is not None else None
         trim_on = bool(trim_raw) if trim_enabled is None else bool(trim_enabled)
 
+        # 「断料脉冲」开关（2026-11-09 用户要求做成页面按钮）：关掉后振幅顶到带顶也只
+        # 连续振动、不踢 0.5s 高幅脉冲，直接转"停下来问操作员"。
+        # 方向只允许收紧：粉档 dispense_flags.zero_rate_pulse=false（目前只有封堵剂2，
+        # 起振即成团爆发）的粉，页面即使开着也不踢——那条封锁不能被按钮绕开。
+        pulse_page = None if zero_rate_pulse is None else bool(zero_rate_pulse)
+        powder_pulse = all(spec.zero_rate_pulse for spec in plan) if plan else True
+        if pulse_page is False and powder_pulse:
+            for spec in plan:
+                spec.zero_rate_pulse = False
+        pulse_effective = all(spec.zero_rate_pulse for spec in plan) if plan else True
+        self._zero_rate_pulse_page = pulse_page
+        self._zero_rate_pulse_powder = powder_pulse
+
         with self._lock:
             self._state = "preparing"
             self._detail = f"准备中：目标 {target} mg，{len(plan)} 段，种子 {r['seed_id']}"
@@ -965,6 +1193,11 @@ class DispenseRunner:
                                 "abs_min_mg_s": SURGE_ABS_MIN_MG_S,
                                 "stop_horizon_s": SURGE_STOP_HORIZON_S,
                                 "max_times": SURGE_MAX_TIMES},
+                # 断料脉冲开关（速率为 0 时允不允许踢一脚）：page=None 表示页面没给、
+                # 跟随粉档；powder_allows 是粉档原值，页面只能关不能强行开。
+                "zero_rate_pulse": {"enabled": pulse_effective,
+                                    "page": pulse_page,
+                                    "powder_allows": powder_pulse},
                 "feedforward": ff_fit,
                 "seed": dict(r["seed"]),
                 "stage_overrides": r["stage_overrides"],
@@ -975,7 +1208,6 @@ class DispenseRunner:
                 "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         self._max_run_s = r["max_run_s"]
-        self._stop_event.clear()
         self._workspace = workspace if ff_ready else None
         self._trim_on = trim_on
         # 缓补可调参数落到实例上（页面留空 = 模块默认）：触发剩余量 / 每发目标。
@@ -1020,6 +1252,9 @@ class DispenseRunner:
         # 熔断判"这一段撑不住、提前切段"的请求位：由 `_surge_brake` 置位，
         # 主循环顶部当成第三个切段触发消费掉（2026-10-26 18:35 用户口径）。
         self._surge_advance = False
+        # 持续微滑（粉档 rod_sweep 开启时）：本次加粉从上电第一秒就开始排队
+        self._rod_sweep_next_s = 0.0
+        self._rod_sweep_count = 0
         self._thread = threading.Thread(
             target=self._thread_main,
             args=(plan, target, r["cls"], tail, ff_fit),
@@ -1349,6 +1584,11 @@ class DispenseRunner:
             return {"stopped": False, "reason": "当前没有运行中的加粉任务"}
         self._internal_stop = reason
         self._stop_event.set()
+        # 正挂在"断料提问"上等回答：顺手把问题撤掉并唤醒线程，否则页面弹窗会
+        # 一直留着，操作员以为还在等自己选（2026-11-09）。
+        with self._ask_lock:
+            self._ask = None
+            self._ask_event.set()
         self._log(f"闭环加粉收到停止请求：{reason}")
         return {"stopped": True, "reason": reason}
 
@@ -1357,6 +1597,297 @@ class DispenseRunner:
         if self.running:
             self._internal_stop = f"急停：{reason}"
             self._stop_event.set()
+
+    # ------------------------------------------------------------------
+    # 断料提问：停下来让操作员二选一（2026-11-09 用户定）
+    # ------------------------------------------------------------------
+
+    def answer(self, action: str, *, step: Any = None, rounds: Any = None) -> dict:
+        """回答「断料怎么办」的提问（页面按钮 → ``POST /api/dispense/answer``）。
+
+        这里**只置位、不动硬件**：真正的动作（抬振幅上限 / 滑推杆）由加粉线程在阻塞点
+        醒来后执行，串口事务永远只有一个线程在碰——和缓补、切段同一套规矩。
+        """
+        action = str(action or "").strip()
+        if action not in ASK_TEXT:
+            raise ValueError(f"未知选项：{action}（只认 raise_amp / slide_rod / stop）")
+        with self._ask_lock:
+            ask = self._ask
+            if not ask:
+                raise RuntimeError("当前没有待操作员回答的提示（可能已恢复或已停止）")
+            self._ask_answer = {
+                "action": action,
+                "step": None if step in (None, "") else int(step),
+                "rounds": None if rounds in (None, "") else int(rounds),
+            }
+            self._ask_event.set()
+            seq = int(ask.get("seq") or 0)
+        self._log(f"断料提问第 {seq} 次：操作员选择「{ASK_TEXT[action]}」")
+        return {"ok": True, "action": action, "text": ASK_TEXT[action], "seq": seq}
+
+    def _nap(self, seconds: float) -> None:
+        """可中断的小睡（等推杆走完）：一有停止请求立刻返回。"""
+        end = time.monotonic() + max(0.0, float(seconds))
+        while time.monotonic() < end:
+            if self._stop_event.is_set():
+                return
+            time.sleep(min(0.1, max(0.0, end - time.monotonic())))
+
+    def _reset_kick_state(self, mass: float) -> None:
+        """踢脚/带顶计时全部归零（换了新上限 = 允许从头再走一轮）。"""
+        self._amp_kick = None
+        self._amp_kick_tries = 0
+        self._amp_kick_last_amp = 0.0
+        self._amp_kick_m0_total = float(mass)
+        self._stall_wait_s = -99.0
+        self._amp_at_cap_since = None
+
+    def _ask_operator(self, spec: StagePlan, mass: float, elapsed: float,
+                      target: int, why: str) -> tuple[str, dict, float, float]:
+        """断料：停振 + 停搅拌，挂出两个选项，本线程在这里等操作员选。
+
+        返回 ``(动作, 回答体, 最新质量, 最新 elapsed)``。等待期间天平只读刷新
+        （页面「当前质量」和曲线不冻住），**不采速率样本**——这段本来就没出料，
+        拿去喂振幅环学习只会把 k/τ 带偏。
+        """
+        self._safe_stop_vibration()
+        self._vib_running = False
+        self._set_stir(0.0, wait=False)
+        self._ask_count += 1
+        self._ask_seq += 1
+        lo, hi = self._band(spec)
+        base_amp = float(spec.amplitude_vpp)
+        cap = self._amp_cap_for(spec)
+        rod_now = int(self._applied_window)
+        rod_up = int(min(ROD_MAX_UNITS, rod_now + ROD_SLIDE_STEP_UNITS))
+        rod_down = int(max(ROD_MIN_UNITS, rod_now - ROD_SLIDE_STEP_UNITS))
+        question = {
+            "seq": self._ask_seq,
+            "kind": "stall",
+            "stage": spec.name,
+            "stage_text": STAGE_TEXT.get(spec.name, spec.name),
+            "mass_mg": round(mass, 1),
+            "target_mg": int(target),
+            "remain_mg": round(max(0.0, float(target) - mass), 1),
+            "why": why,
+            "asked_s": round(elapsed, 1),
+            # 两个选项的现场参数：页面直接显示，不自己算
+            "amp_vpp": round(float(self._applied_amp), 2),
+            "amp_base_vpp": round(base_amp, 2),
+            "amp_band": [round(lo, 2), round(hi, 2)],
+            "amp_cap_vpp": cap,
+            "amp_raise_step_vpp": AMP_CAP_RAISE_STEP_V,
+            "amp_after_raise_vpp": round(min(AMP_MAX_VPP, hi + AMP_CAP_RAISE_STEP_V), 2),
+            "amp_cap_after_raise_vpp": round(min(AMP_MAX_VPP, cap + AMP_CAP_RAISE_STEP_V), 2),
+            "rod_units": rod_now,
+            "rod_slide_step": ROD_SLIDE_STEP_UNITS,
+            "rod_slide_plan": [rod_up, rod_down, rod_now],
+            "rod_rounds": ROD_SLIDE_ROUNDS,
+            "timeout_s": STALL_ASK_TIMEOUT_S,
+            "count": self._ask_count,
+            "max_count": STALL_ASK_MAX,
+        }
+        with self._ask_lock:
+            self._ask = question
+            self._ask_answer = None
+            self._ask_event.clear()
+        stage_text = STAGE_TEXT.get(spec.name, spec.name)
+        with self._lock:
+            self._state = "waiting"
+            self._detail = (f"断料提问：{stage_text}段 {mass:.0f}/{target}mg 已 {why}"
+                            f"——已停振停搅拌，请选择「提高振幅上限」或「上下滑动窗口」")
+        self._log(f"**断料提问**（第 {self._ask_count}/{STALL_ASK_MAX} 次）：{stage_text}段 "
+                  f"{mass:.0f}/{target}mg 连续 {STALL_ASK_S:.0f}s 净增 <"
+                  f"{STALL_ABORT_GAIN_MG:.0f}mg（{why}）—— **已停振、停搅拌**，等操作员选："
+                  f"① 提高振幅上限：带 {lo:.2f}–{hi:.2f} → "
+                  f"{lo:.2f}–{question['amp_after_raise_vpp']:.2f}V，踢脚硬顶 "
+                  f"{cap:.2f} → {question['amp_cap_after_raise_vpp']:.2f}V；"
+                  f"② 上下滑窗：推杆 {rod_now} → {rod_up} → {rod_down} → 回 {rod_now}"
+                  f"（{ROD_SLIDE_ROUNDS} 轮）。{STALL_ASK_TIMEOUT_S:.0f}s 不选按"
+                  f"「{ASK_TEXT['stop']}」处理")
+        deadline = time.monotonic() + STALL_ASK_TIMEOUT_S
+        answered = False
+        try:
+            while time.monotonic() < deadline:
+                if self._stop_event.is_set():
+                    break
+                if self._ask_event.is_set():
+                    answered = True
+                    break
+                # 用 sleep 而不是 Event.wait(timeout)：离线仿真把 time 换成了虚拟时钟，
+                # 只有走 time.sleep 才会把"等操作员"的时间推走（否则冒烟会真等 5 分钟）。
+                time.sleep(0.2)
+                try:
+                    raw = self._read_balance_raw()
+                except Exception:            # noqa: BLE001 - 读不到就跳这一拍
+                    continue
+                mass = float(raw) - self._baseline
+                elapsed = time.monotonic() - self._t0
+                self._record(elapsed, mass, 0.0, spec.name, learn=False)
+        finally:
+            with self._ask_lock:
+                reply = self._ask_answer
+                self._ask = None
+                self._ask_answer = None
+                self._ask_event.clear()
+            with self._lock:
+                if self._state == "waiting":
+                    self._state = "running"
+        if self._stop_event.is_set():
+            raise _Abort(getattr(self, "_internal_stop", "操作员停止"))
+        if not answered or not reply:
+            self._log(f"断料提问 {STALL_ASK_TIMEOUT_S:.0f}s 没人回答——按「"
+                      f"{ASK_TEXT['stop']}」处理")
+            return "stop", {}, mass, elapsed
+        return str(reply.get("action") or "stop"), dict(reply), mass, elapsed
+
+    def _apply_amp_raise(self, spec: StagePlan, mass: float, elapsed: float,
+                         step: Any = None) -> None:
+        """操作员选「提高振幅上限」：把带顶和踢脚硬顶一起抬一档，并重新给足出手空间。"""
+        step_v = AMP_CAP_RAISE_STEP_V if step in (None, "", 0) else float(step)
+        step_v = max(0.1, min(2.0, float(step_v)))
+        band_before = self._band(spec)
+        cap_before = self._amp_cap_for(spec)
+        self._amp_extra_vpp = round(float(self._amp_extra_vpp) + step_v, 2)
+        lo, hi = self._band(spec)
+        cap = self._amp_cap_for(spec)
+        # 解掉"已停手"、踢脚计数归零：新上限下允许重走"爬带 → 踢脚"一整轮
+        self._amp_saturated = False
+        self._amp_lock_reason = ""
+        self._reset_kick_state(mass)
+        target_amp = round(min(cap, max(float(self._applied_amp), hi)), 2)
+        self._set_amplitude(
+            target_amp, elapsed,
+            f"操作员提高振幅上限：带顶 {band_before[1]:.2f}→{hi:.2f}V、踢脚硬顶 "
+            f"{cap_before:.2f}→{cap:.2f}V，工作振幅回到 {target_amp:.2f}V",
+            ceiling=cap)
+        self._log(f"提高振幅上限（+{step_v:.2f}V）：连续振幅带 {lo:.2f}–{band_before[1]:.2f} "
+                  f"→ {lo:.2f}–{hi:.2f}V，踢脚硬顶 {cap_before:.2f} → {cap:.2f}V，"
+                  f"工作振幅 {target_amp:.2f}V —— 继续加粉")
+
+    def _slide_rod_window(self, mass: float, elapsed: float, reply: dict) -> None:
+        """操作员选「上下滑动窗口」：推杆 上 +N → 下 −N 来回滑，最后回原位。
+
+        用户 2026-11-09 的原话："比如现在是 500，上滑 +50、下滑 -50，也就是 550、
+        450，再回到 500"。滑的时候**振动和搅拌都是停的**（进来之前已经停掉），
+        所以不会边滑边落粉；滑完由调用方重新开闸。
+        """
+        step = int(reply.get("step") or ROD_SLIDE_STEP_UNITS)
+        rounds = int(reply.get("rounds") or ROD_SLIDE_ROUNDS)
+        step = max(5, min(200, step))
+        rounds = max(1, min(5, rounds))
+        base = int(self._applied_window)
+        up = int(min(ROD_MAX_UNITS, base + step))
+        down = int(max(ROD_MIN_UNITS, base - step))
+        self._log(f"上下滑窗破拱：推杆 {base} → {up} → {down}（{rounds} 轮）→ 回 {base}，"
+                  f"每档停 {ROD_SLIDE_WAIT_S:.1f}s（振动/搅拌此刻都是停的）")
+        try:
+            for i in range(rounds):
+                for pos in (up, down):
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        self.hub.rod_move(int(pos))
+                        self._applied_window = int(pos)
+                        self._log(f"  滑窗第 {i + 1} 轮：推杆 → {pos}")
+                    except Exception as error:     # noqa: BLE001 - 滑不动就退回原位
+                        self._log(f"  滑窗：推杆走到 {pos} 失败（{error}），回原位")
+                    self._nap(ROD_SLIDE_WAIT_S)
+        finally:
+            try:
+                self.hub.rod_move(base)
+                self._applied_window = base
+                self._log(f"  滑窗结束：推杆回到原位 {base}")
+            except Exception as error:             # noqa: BLE001
+                self._log(f"  ⚠ 滑窗后推杆回 {base} 失败（{error}）——请手动核对开度")
+            self._nap(ROD_SLIDE_WAIT_S)
+
+    def _rod_sweep_tick(self, spec: StagePlan, mass: float, elapsed: float,
+                        target: int) -> bool:
+        """加粉中的「持续微滑」：振动开着，推杆每 ``interval_s`` 秒上下各动 ``step``。
+
+        2026-11-09 18:0x 用户："对于这个包被剂，你做一个操作，在他加粉的时候持续
+        进行推杆的移动，就不要 +-50 了，改为 +-25 移动推杆"。
+        目的：大分子包被剂在料口容易压实/搭桥，靠推杆持续小幅度来回把拱顶散，
+        比停下来一次性滑 ±50 更平滑（不停振、不打断出料，也不影响振幅闭环）。
+
+        与"推杆整段锁死"的关系：**工作开度不变**。每次都是 base → base+step →
+        base-step → base，滑完一定回 base，``_applied_window`` 复位；段内配方
+        （rod_ff）从头到尾没被改写，所以还是"推杆不参与调流量"。
+
+        安全/边界：
+          · ``step == 0``（粉档没配 rod_sweep）= 完全不做，其他粉零影响；
+          · 只在本段振动开着时做：沉降门 / 收尾称重 / 缓补脉冲期间一律不滑；
+          · 离切点或离目标不足 ``ROD_SWEEP_KEEP_OFF_MG`` 就不滑——收口那一两克
+            不能被推杆扰动带偏；
+          · 整段持有 ``rod_lock()``，与换段写推杆、人工微滑互斥，不会把开度写乱。
+        返回 True 表示这一拍真的滑了（调用方要重新读秤、重算 mass/elapsed）。
+        """
+        step = int(getattr(spec, "rod_sweep_step", 0) or 0)
+        if step <= 0:
+            return False
+        if elapsed < float(self._rod_sweep_next_s):
+            return False
+        if not self._vib_running:
+            return False
+        # 收口保护：切点 / 总目标前留一段"干净"的料流，别在最后一刻制造台阶
+        keep_off = max(ROD_SWEEP_KEEP_OFF_MG, float(spec.rate_mg_s) * 2.0)
+        if spec.switch_mass_mg is not None and float(spec.switch_mass_mg) - mass <= keep_off:
+            return False
+        if float(target) - mass <= keep_off:
+            return False
+
+        base = int(self._applied_window)
+        up = int(min(ROD_MAX_UNITS, base + step))
+        down = int(max(ROD_MIN_UNITS, base - step))
+        if up == base and down == base:
+            return False
+        dwell = max(0.10, float(getattr(spec, "rod_sweep_dwell_s", ROD_SWEEP_DWELL_S)))
+        interval = max(1.0, float(getattr(spec, "rod_sweep_interval_s", ROD_SWEEP_INTERVAL_S)))
+
+        self._rod_sweep_count += 1
+        self._log(f"持续微滑 #{self._rod_sweep_count}（{STAGE_TEXT.get(spec.name, spec.name)}）："
+                  f"推杆 {base} → {up} → {down} → {base}"
+                  f"（±{step} 单位，振动开着，每档停 {dwell:.2f}s，"
+                  f"间隔 {interval:.1f}s，质量 {mass:.0f}/{target}mg）")
+        try:
+            with self._rod_wiggle_lock:
+                for pos in (up, down):
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        self.hub.rod_move(int(pos))
+                        self._applied_window = int(pos)
+                    except Exception as error:      # noqa: BLE001 - 滑不动就赶紧回原位
+                        self._log(f"  微滑：推杆走到 {pos} 失败（{error}），立即回原位")
+                        break
+                    self._nap(dwell)
+        finally:
+            try:
+                if int(self._applied_window) != base:
+                    self.hub.rod_move(base)
+                self._applied_window = base
+            except Exception as error:              # noqa: BLE001
+                self._log(f"  ⚠ 微滑后推杆回 {base} 失败（{error}）——请手动核对开度")
+        # 下一次从"滑完这一刻"起算：滑本身耗时 0.6s 左右，别把它算进间隔
+        self._rod_sweep_next_s = (time.monotonic() - self._t0) + interval
+        return True
+
+    def _resume_after_ask(self, spec: StagePlan, mass: float, elapsed: float) -> None:
+        """断料处理完：起搅拌 → 重新开闸 → 清掉观察窗，别拿"停着的那几秒"当零落料。"""
+        if self._applied_stir <= 0.5 or abs(float(spec.stir_rpm) - self._applied_stir) > 1.0:
+            self._set_stir(float(spec.stir_rpm), wait=True)
+        self._open_vibration(
+            f"断料处理完毕（{STAGE_TEXT.get(spec.name, spec.name)} {mass:.0f}mg），重新开闸接着加")
+        # 振动的响应窗从这一刻起算：否则振幅环一睁眼就看见"最近 6s 0mg"
+        self._mass_hist = [(t, m) for t, m in self._mass_hist if t >= elapsed - 1.0]
+        self._amp_last_eval_s = elapsed
+        self._amp_last_write_s = elapsed
+        self._amp_wait_s = AMP_CTRL_MIN_EVAL_S
+        self._log(f"重新开闸：{STAGE_TEXT.get(spec.name, spec.name)}段 搅拌 "
+                  f"{spec.stir_rpm:.0f}RPM / 振幅 {self._applied_amp:.2f}V / 推杆 "
+                  f"{self._applied_window}，剩 "
+                  f"{max(0.0, float(self._config.get('target_mg') or 0) - mass):.0f}mg")
 
     # ------------------------------------------------------------------
     # 阶段计划
@@ -1540,6 +2071,21 @@ class DispenseRunner:
         if slow_span is not None and not 0.0 < slow_span <= AMP_MAX_VPP:
             slow_span = None
 
+        # 粉级「加粉中持续微滑」（2026-11-09）：档里这么写就整段生效
+        #   "rod_sweep": {"step": 25, "interval_s": 4.0, "dwell_s": 0.3}
+        # 没写/写坏 → step=0，等于这段不滑（其他粉一个都不受影响）。
+        sweep_step, sweep_interval, sweep_dwell = 0, ROD_SWEEP_INTERVAL_S, ROD_SWEEP_DWELL_S
+        try:
+            raw_sweep = flags.get("rod_sweep") or {}
+            if isinstance(raw_sweep, dict):
+                sweep_step = max(0, min(200, int(raw_sweep.get("step", 0) or 0)))
+                sweep_interval = max(1.0, min(60.0, float(
+                    raw_sweep.get("interval_s") or ROD_SWEEP_INTERVAL_S)))
+                sweep_dwell = max(0.10, min(2.0, float(
+                    raw_sweep.get("dwell_s") or ROD_SWEEP_DWELL_S)))
+        except (TypeError, ValueError):
+            sweep_step, sweep_interval, sweep_dwell = 0, ROD_SWEEP_INTERVAL_S, ROD_SWEEP_DWELL_S
+
         # 每段是否启用：默认由边界决定（边界 None = 这个目标尺寸不需要这段）；
         # 慢加是收尾段，不允许关掉（关掉就没人负责最后那一刀）。
         enabled = {name: (bounds.get(name) is not None or name == "slow") for name in STAGE_ORDER}
@@ -1622,6 +2168,9 @@ class DispenseRunner:
                 amplitude_vpp=amp, amp_explicit=amp_explicit,
                 amp_span_vpp=(slow_span if name == "slow" else None),
                 zero_rate_pulse=zero_rate_pulse,
+                rod_sweep_step=sweep_step,
+                rod_sweep_interval_s=sweep_interval,
+                rod_sweep_dwell_s=sweep_dwell,
                 settle_wait_s=None if settle_wait is None else float(settle_wait),
                 control_note=STAGE_NOTE[name],
                 rod_ff_expected_rate=predicted, rod_ff_achievable=achievable,
@@ -1752,6 +2301,8 @@ class DispenseRunner:
     def _thread_main(self, plan: list[StagePlan], target: int,
                      cls: dict, tail: float, ff_fit: dict) -> None:
         reason = "运行结束"
+        # 搅拌方向一次加粉一换：清成 None，等第一次真正起转时由 `_stir_dir` 定下来
+        self._stir_direction = None
         try:
             states = self._prepare(plan)
             reason = self._loop(plan, states, target, cls, tail, ff_fit)
@@ -1808,7 +2359,7 @@ class DispenseRunner:
         self._amp_last_dir = None
         self._amp_last_eval_s = 0.0
         self._amp_probe = None
-        self._amp_band = _amp_band_for(first)
+        self._amp_band = self._band(first)
         self._amp_lock_reason = ""
         self._amp_kick = None
         self._amp_kick_tries = 0
@@ -1837,6 +2388,14 @@ class DispenseRunner:
         self._kick_count = 0             # 本次加粉累计踢脚次数（原来跨次加粉累加，CSV 会串账）
         self._stall_abort_s = 0.0        # 断料兜底参考时刻
         self._stall_abort_ref = 0.0      # 断料兜底参考质量
+        # 断料提问：每次加粉从零开始（提问次数、已抬升量、遗留回答都要清）
+        self._amp_extra_vpp = 0.0
+        self._ask_seq = 0
+        self._ask_count = 0
+        with self._ask_lock:
+            self._ask = None
+            self._ask_answer = None
+            self._ask_event.clear()
         self._last_drop_s = None         # 上一次天平读数变化的时刻
         self._ramp_last_s = -99.0
         self._prev_eval_rate = None
@@ -1865,7 +2424,7 @@ class DispenseRunner:
                           f"{AMP_CTRL_STEP_MIN_V:g}–{AMP_CTRL_UP_MAX_V:g}V；"
                           f"步子按缺口÷增益算，"
                           + ("顶到带顶仍不出就踢一脚）" if first.zero_rate_pulse
-                             else "该粉不许零速率脉冲，顶到带顶不踢脚）")))
+                             else f"{self._pulse_off_text()}，顶到带顶不踢脚）")))
 
         if self._stop_event.is_set():
             raise _Abort(self._internal_stop)
@@ -1875,10 +2434,14 @@ class DispenseRunner:
                         f"起振：{self._config['frequency_hz']:g}Hz / "
                         f"{first.duty_seed_permyriad / 100:.1f}% 占空比 / "
                         f"振幅 {self._applied_amp:.2f}Vpp，"
-                        f"搅拌 {first.stir_rpm:.0f} RPM")
+                        f"搅拌 {first.stir_rpm:.0f} RPM"
+                        + ("" if self._stir_direction is None
+                           else f"（{STIR_DIR_TEXT[self._stir_direction]}）"))
         self._open_vibration(f"起振：{STAGE_TEXT[first.name]}，"
                              f"振幅 {self._applied_amp:.2f}Vpp / "
-                             f"搅拌 {first.stir_rpm:.0f} RPM")
+                             f"搅拌 {first.stir_rpm:.0f} RPM"
+                             + ("" if self._stir_direction is None
+                                else f"（{STIR_DIR_TEXT[self._stir_direction]}）"))
         return {"stage_index": 0}
 
     def _loop(self, plan: list[StagePlan], states: dict, target: int,
@@ -2033,6 +2596,19 @@ class DispenseRunner:
                     # "振动已经停了"的旧数据，跑了只会用旧段的振幅再算一遍。
                     continue
 
+            # ── 加粉中「持续微滑」推杆（2026-11-09 用户，粉档 rod_sweep 开了才做）──
+            # 放在切段/熔断判定之后：这一段确定还要继续加，才去扰动推杆。
+            # 一次微滑 ≈0.6s，这期间料一直在落，回来必须重读秤、重算 mass/elapsed，
+            # 否则控制器会拿"0.6s 前的质量"当现在用。
+            if self._rod_sweep_tick(spec, mass, elapsed, target):
+                elapsed = time.monotonic() - self._t0
+                try:
+                    raw = self._read_balance_raw()
+                    mass = float(raw) - self._baseline
+                    self._last_raw = int(raw)
+                except Exception as error:      # noqa: BLE001 - 读不到就沿用旧值，下一拍再读
+                    self._log(f"微滑后读秤失败（{error}）")
+
             motion = estimator.update(elapsed, mass)
             observation = FeedbackObservation(
                 mass_mg=mass,
@@ -2049,17 +2625,42 @@ class DispenseRunner:
             if mass > target + self.OVERSHOOT_ABORT_MG:
                 raise _Abort(f"超重保护：{mass:.0f} mg 已超过 目标+{self.OVERSHOOT_ABORT_MG:.0f}mg")
 
-            # 兜底：振幅/踢脚都已经到顶还一直不出料 → 别再空转等超时（2026-10-26 11:17）
+            # 兜底：振幅/踢脚都已经到顶还一直不出料 → **停下来问操作员**（2026-11-09）
+            # 旧版在这里默默中止（连续 30s 净增 <2mg）。用户要的是把选择权交回来：
+            # 「提高振幅上限继续加」或「上下滑动窗口破拱」，选完接着加；
+            # 没人回答 / 明确选停止，才按中止收场。
             if self._amp_saturated:
                 if (mass >= float(self._stall_abort_ref) + STALL_ABORT_GAIN_MG
                         or elapsed < float(self._stall_abort_s)):
                     self._stall_abort_ref = mass
                     self._stall_abort_s = elapsed
-                elif elapsed - float(self._stall_abort_s) >= STALL_ABORT_S:
-                    raise _Abort(
-                        f"断料中止：振幅已到顶、踢脚也到顶，连续 {STALL_ABORT_S:.0f}s "
-                        f"净重没涨（停在 {mass:.0f}/{target}mg）——请检查料斗是否缺料/"
-                        f"搭桥、推杆开度是否够")
+                elif elapsed - float(self._stall_abort_s) >= STALL_ASK_S:
+                    if self._ask_count >= STALL_ASK_MAX:
+                        raise _Abort(
+                            f"断料中止：已经问过 {self._ask_count} 次（上限 {STALL_ASK_MAX} 次），"
+                            f"仍停在 {mass:.0f}/{target}mg——请检查料斗是否缺料/搭桥、"
+                            f"推杆开度是否够")
+                    why = (self._amp_lock_reason
+                           or f"振幅 {self._applied_amp:.2f}V 到顶、踢脚到硬顶仍不出料")
+                    action, reply, mass, elapsed = self._ask_operator(
+                        spec, mass, elapsed, target, why)
+                    if action == "raise_amp":
+                        self._apply_amp_raise(spec, mass, elapsed, reply.get("step"))
+                    elif action == "slide_rod":
+                        self._slide_rod_window(mass, elapsed, reply)
+                        # 滑窗本身不改振幅，但料道通了就该重新走一轮"爬带 → 踢脚"
+                        self._amp_saturated = False
+                        self._amp_lock_reason = ""
+                        self._reset_kick_state(mass)
+                    else:
+                        raise _Abort(
+                            f"断料中止：操作员选择停止（{ASK_TEXT['stop']}），停在 "
+                            f"{mass:.0f}/{target}mg——请检查料斗是否缺料/搭桥")
+                    self._resume_after_ask(spec, mass, elapsed)
+                    # 重新计时：处理完先给一个完整工作时间窗，别立刻又判"断料"
+                    self._stall_abort_ref = mass
+                    self._stall_abort_s = elapsed
+                    self._record(elapsed, mass, 0.0, spec.name, learn=False)
             else:
                 self._stall_abort_ref = mass
                 self._stall_abort_s = elapsed
@@ -2163,7 +2764,7 @@ class DispenseRunner:
         new_amp = _clamp_amp(base_amp)
         # 兜底：起步振幅必须在带内（基准±0.5V 的两个端点本来就是起步值，这里是防
         # 以后有人往基准里塞越界值）。
-        band_lo, band_hi = _amp_band_for(spec)
+        band_lo, band_hi = self._band(spec)
         if new_amp > band_hi + 0.001:
             new_amp = band_hi
         elif new_amp < band_lo - 0.001:
@@ -2181,7 +2782,9 @@ class DispenseRunner:
         self._mass_hist = self._mass_hist[-40:]
         self._amp_last_eval_s = elapsed
         self._amp_probe = None
-        self._amp_band = _amp_band_for(spec)
+        # 换段 = 换配方：上一段"提高振幅上限"的抬升量不带进新段
+        self._amp_extra_vpp = 0.0
+        self._amp_band = self._band(spec)
         self._amp_lock_reason = ""
         # 段内相位复位；τ/T/增益是"这种粉"的性质，跨段保留
         self._amp_write_marks = []
@@ -2221,14 +2824,20 @@ class DispenseRunner:
         target_rod = int(spec.rod_ff)
         self._sig_write(lambda: self.hub.sig.set_duty(spec.duty_seed_permyriad / 100.0))
         self._applied_duty = spec.duty_seed_permyriad
-        if abs(target_rod - self._applied_window) >= 2:
-            self.hub.rod_move(target_rod)         # 只下发不等待：闭环不能被 0.6s 行程卡住
-            self._applied_window = target_rod
+        # 手动「推杆微滑」正在跑就先等它结束：它最后一件事是"回原位"（把开度写回
+        # 滑动前那个值），不等就可能出现"新段刚下发 730 → 滑动收尾改回 490"。
+        # 这期间振动已经在上面关掉了，所以等几秒不会掉粉。
+        if self._rod_wiggle_lock.locked():
+            self._log(f"换段写推杆要等手动微滑结束（最多几秒）")
+        with self._rod_wiggle_lock:
+            if abs(target_rod - self._applied_window) >= 2:
+                self.hub.rod_move(target_rod)         # 只下发不等待：闭环不能被 0.6s 行程卡住
+                self._applied_window = target_rod
         # 推杆是硬约束：本段开度就从标定点照抄，全程不再动（用户 2026-10-22 明确要求）。
         # 这句日志是"锁死"的凭证，事后复盘能直接对上"这一段推杆有没有被改过"。
         band_lo, band_hi = self._amp_band
         pulse_note = ("真卡粉才踢一脚 0.5s 脉冲、踢完回落" if spec.zero_rate_pulse
-                      else "该粉不许零速率脉冲（不踢脚），只靠这条振幅带逼料")
+                      else f"{self._pulse_off_text()}（不踢脚），只靠这条振幅带逼料")
         amp_note = (f"振幅 {self._applied_amp:.2f}V（慢加不追速率；连续振幅 "
                     f"{band_lo:.2f}–{band_hi:.2f}V = 基准"
                     f"{float(spec.amplitude_vpp):.2f}V±{band_hi - float(spec.amplitude_vpp):.2f}V，"
@@ -2281,7 +2890,7 @@ class DispenseRunner:
         k = float(self._k_est) if self._k_est else AMP_CTRL_K_DEFAULT
         k = max(AMP_CTRL_K_MIN, min(AMP_CTRL_K_MAX, k))
         cut = (prev - target_rate) / k
-        floor = _amp_band_for(spec)[0]
+        floor = self._band(spec)[0]
         want = round(max(floor, new_amp - cut), 2)
         if want >= new_amp - 0.04:
             return new_amp
@@ -2860,18 +3469,55 @@ class DispenseRunner:
             r2 = 1.0
         return {"rate": slope, "span": span, "n": n, "gain": gain, "r2": r2}
 
+    def _stir_dir(self) -> int:
+        """本次加粉的搅拌方向（0 顺时针 / 1 逆时针）——**一次加粉一换**。
+
+        2026-10-30 用户要求："这次顺时针，下次逆时针"。
+
+        定方向 + 翻存档放在**真正起转那一刻**（不是启动瞬间）：启动被互锁/自检拒绝、
+        压根没转过的情况，不该白吃掉一次切换。`_thread_main` 每次开头把
+        `_stir_direction` 清成 None，所以一次加粉里所有起转（换段/缓补/补差重启）
+        用的都是同一个方向——中途绝不会反转。
+        """
+        if self._stir_direction is None:
+            direction = take_stir_direction()
+            self._stir_direction = direction
+            self._log(f"本次加粉搅拌方向：{STIR_DIR_TEXT[direction]}"
+                      f"（下一次加粉：{STIR_DIR_TEXT[flip_stir_direction(direction)]}）")
+        return self._stir_direction
+
     def _set_stir(self, rpm: float, *, wait: bool) -> None:
         try:
             if rpm <= 0.5:
                 self.hub.stir_stop("decel", acc=self.STIR_ACC)
                 self._applied_stir = 0.0
             else:
-                self.hub.stir_start(float(rpm), acc=self.STIR_ACC, direction=0)
+                self.hub.stir_start(float(rpm), acc=self.STIR_ACC,
+                                    direction=self._stir_dir())
                 self._applied_stir = float(rpm)
                 if wait:
                     time.sleep(self.STIR_SETTLE_S)
         except Exception as error:      # noqa: BLE001 - 搅拌失败不该让整次加粉直接崩
             self._log(f"搅拌切换到 {rpm:.0f} RPM 失败：{error}")
+
+    def _band(self, spec: StagePlan) -> tuple[float, float]:
+        """本段振幅带（带上下界），叠加操作员"提高振幅上限"的抬升量。
+
+        ``_amp_band_for`` 是纯函数（只按粉体/页面配方算），这里多加一层运行期偏移：
+        断料提问时操作员选了「提高振幅上限」，就把它整体往上抬
+        ``AMP_CAP_RAISE_STEP_V`` 的整数倍，连续带顶与踢脚硬顶一起抬——
+        用户要的就是"上限不够就再给我一档"。
+        """
+        lo, hi = _amp_band_for(spec)
+        if self._amp_extra_vpp > 0.005:
+            hi = round(min(AMP_MAX_VPP, hi + float(self._amp_extra_vpp)), 2)
+        return lo, hi
+
+    def _amp_cap_for(self, spec: StagePlan) -> float:
+        """踢脚硬顶 = 基准 + AMP_ESCALATE_V（+ 操作员抬升量），并钳到设备上限。"""
+        return round(min(AMP_MAX_VPP,
+                         float(spec.amplitude_vpp) + AMP_ESCALATE_V
+                         + float(self._amp_extra_vpp)), 2)
 
     def _amp_heartbeat(self, spec: StagePlan, mass: float, elapsed: float,
                        cmd: float, detail: str) -> None:
@@ -2979,7 +3625,7 @@ class DispenseRunner:
         # 和这里的 cap/floor 是同一个函数算的，永远不会各说各话（2026-10-29 统一）。
         # 慢加基准 2.00V 的默认带是 0.01–2.50V；档案 dispense_flags 给了
         # slow_amp_span_vpp 时（封堵剂2 = 1.0）变成 1.00–3.00V。
-        floor_v, cap_v = _amp_band_for(spec)
+        floor_v, cap_v = self._band(spec)
         ceil_v = AMP_MAX_VPP if slow_stage else AMP_CTRL_CEIL_VPP
         # 下界**只看本段带**，不再被"学到的起振门槛"抬高（2026-10-27 11:28 用户定：
         # "起振的门槛就是由我来定的，就是我会输入的那个值"）。
@@ -3012,17 +3658,27 @@ class DispenseRunner:
                 and elapsed - float(self._amp_at_cap_since) >= AMP_KICK_GATE_WINDOW_S
                 and (gate_rate is None or gate_rate < AMP_KICK_GATE_RATE_MG_S)):
             if not spec.zero_rate_pulse:
-                # 该粉标记"不许在加粉速率为 0 时脉冲"（2026-10-29 用户定，封堵剂2 专用）：
-                # 顶上不踢脚。它起振即成团爆发，0.5s 高幅脉冲甩出来就是几十上百 mg，
-                # 宁可顶着放宽后的振幅带（慢加 1.00–3.00V）继续连续振动把料逼出来；
-                # 真一直不出料就交给 30s 断料中止，绝不用脉冲赌一把。
+                # 零速率时不许踢脚，有两种来源：粉档封锁（封堵剂2 起振即成团爆发，
+                # 2026-10-29 用户定）或页面把「断料脉冲」关掉了（2026-11-09 用户要求）。
+                # 不踢就一直连续振动顶着带顶走；这里顺手把"振幅已停手"立起来，
+                # 让主循环在 10s 净增 <2mg 时停下来问操作员，
+                # 而不是像旧版那样闷头空转到 max_run_s。
+                if not self._amp_saturated:
+                    self._amp_saturated = True
+                    self._amp_lock_reason = (
+                        f"{self._pulse_off_text()}，振幅顶在 {cap_v:.2f}V 仍不出料")
+                    self._log(f"{self._pulse_off_text()}：振幅已在 {cap_v:.2f}V 停满 "
+                              f"{elapsed - float(self._amp_at_cap_since):.0f}s、近 4s 速率 "
+                              + (f"{gate_rate:.1f}" if gate_rate is not None else "≈0")
+                              + f" mg/s < {AMP_KICK_GATE_RATE_MG_S:g}——不踢脚（脉冲已关），"
+                              f"再不出料将停下来请操作员选择")
                 self._amp_heartbeat(
                     spec, mass, elapsed, cmd,
                     f"已在振幅上限 {cap_v:.2f}V 停留 "
                     f"{elapsed - float(self._amp_at_cap_since):.0f}s、近 4s 速率 "
                     + (f"{gate_rate:.1f}" if gate_rate is not None else "≈0")
-                    + f" < {AMP_KICK_GATE_RATE_MG_S:g} mg/s —— 该粉标记不许零速率脉冲，"
-                    f"不踢脚（振幅带已放宽到 {floor_v:.2f}–{cap_v:.2f}V，再不出料将判断料中止）")
+                    + f" < {AMP_KICK_GATE_RATE_MG_S:g} mg/s —— {self._pulse_off_text()}，"
+                    f"不踢脚（振幅带 {floor_v:.2f}–{cap_v:.2f}V），再不出料将停下来提问")
                 return
             self._stall_relief(
                 spec, mass, elapsed, cmd,
@@ -3213,6 +3869,16 @@ class DispenseRunner:
             f"（{step_v:+.2f}V，第 {self._amp_changes} 次{damp_note}）",
             ceiling=ceil_v)
 
+    def _pulse_off_text(self) -> str:
+        """「零速率脉冲」被禁的原因（日志/页面/提问都用这一句，别各写一套）。
+
+        2026-11-09 加了页面开关以后有两种来源，操作员看到的原因必须能对上：
+        页面关的 → 改开关即可；粉档封锁 → 换开关也没用（安全规则）。
+        """
+        if self._zero_rate_pulse_page is False:
+            return "本次加粉在页面关闭了「断料脉冲」"
+        return "该粉档案标记 zero_rate_pulse=false（不许零速率脉冲）"
+
     def _stall_relief(self, spec: StagePlan, mass: float, elapsed: float,
                       cmd: float, detail: str = "") -> None:
         """卡粉/断料救济：踢一脚——振幅瞬间抬到 标定+1.0V，持续 0.5s 后立刻回落。
@@ -3246,7 +3912,7 @@ class DispenseRunner:
         if not spec.zero_rate_pulse:
             self._amp_heartbeat(
                 spec, mass, elapsed, cmd,
-                "该粉标记 zero_rate_pulse=false：不走零速率脉冲救济（踢脚）")
+                f"{self._pulse_off_text()}：不走零速率脉冲救济（踢脚）")
             return
         base = float(spec.amplitude_vpp)
         if spec.name == "slow":
@@ -3256,7 +3922,9 @@ class DispenseRunner:
             anchor = base
         else:
             anchor = max(base, float(self._applied_amp))   # 坑①：锚定当前实际振幅
-        cap = round(base + AMP_ESCALATE_V, 2)          # 坑②：与微调带无关的硬顶
+        # 坑②：与微调带无关的硬顶（基准 +1.5V）。操作员在断料提问里选了
+        # 「提高振幅上限」时，这里跟着 `_amp_extra_vpp` 一起抬（2026-11-09）。
+        cap = self._amp_cap_for(spec)
         # 冷却判定（2026-10-27 13:35 加负值兜底）：正常口径是"上一脚回落后再等 τ+T"。
         # 事故回顾：13:29 那次加粉 `_stall_wait_s` 带着上一次加粉的 189s 进新的一次加粉，新的一次加粉 elapsed
         # 才 41s → `elapsed - 189` 为负、恒小于 τ+T → 每拍都判"冷却中"，一脚都不踢，
@@ -3299,9 +3967,12 @@ class DispenseRunner:
                 self._amp_saturated = True
                 self._amp_lock_reason = f"踢粉到顶 {cap:.2f}V：{why}"
                 self._log(f"踢粉已经到顶 {cap:.2f}V（标定 {base:.2f}V "
-                          f"+{AMP_ESCALATE_V:.2f}V）：{why}"
+                          f"+{AMP_ESCALATE_V:.2f}V"
+                          + (f"+操作员抬升 {float(self._amp_extra_vpp):.2f}V"
+                             if float(self._amp_extra_vpp) > 0.005 else "")
+                          + f"）：{why}"
                           + (f"（{detail}）" if detail else "")
-                          + "——请检查料斗是否搭桥/缺料、推杆开度是否够。振幅不再往上加")
+                          + "——请检查料斗是否搭桥/缺料、推杆开度是否够。")
                 return
             kick_amp = cap          # 振幅不再加，就在硬顶这一档继续踢
         self._stall_wait_s = elapsed
@@ -3336,7 +4007,9 @@ class DispenseRunner:
         if self._trim_stir_rpm <= 0.0:
             return
         try:
-            self.hub.stir_start(self._trim_stir_rpm, acc=self.STIR_ACC, direction=0)
+            # 同一次加粉里缓补的方向必须和主段一致（`_stir_dir` 只会定一次方向）
+            self.hub.stir_start(self._trim_stir_rpm, acc=self.STIR_ACC,
+                                direction=self._stir_dir())
             self._applied_stir = self._trim_stir_rpm
         except Exception as error:          # noqa: BLE001 - 起不来就只靠振动出料
             self._log(f"缓补起搅拌失败（{error}），本发只靠振动出料")
@@ -3775,14 +4448,13 @@ class DispenseRunner:
             self._record(elapsed, mass, gain / max(pulse_s, 0.05), "trim")
             if gain < 0.5:
                 no_gain += 1
-                if no_gain >= TRIM_NO_GAIN_LIMIT:
-                    self._log(f"{label}连续 {no_gain} 发没出粉（幅"
-                              f"{'锁定在' if hold_amp else '已抬到'} "
-                              f"{self._applied_amp:.2f}V"
-                              f"{'' if hold_amp else f'/{TRIM_AMP_MAX_VPP:.1f}V'}、"
-                              f"预转 {preroll:.2f}s、杆 {self._applied_window}）"
-                              f"——停手，请检查料斗是否搭桥/缺料")
-                    break
+                # 存粉模式的判断**必须排在通用停手线之前**（2026-11-09 修死锁 bug）：
+                # TRIM_STOCK_MAX_NOGAIN(8) > TRIM_NO_GAIN_LIMIT(6)，旧顺序里通用 break 先命中，
+                # 退出分支写在它后面**永远走不到** —— 存粉模式一旦触发，上限就被锁在
+                # 6 发 ×0.2V 慢抬，必然空手收场（11-09 10:08 那次 3000mg 失水剂2：
+                # 尾料 22mg 误判存粉 → 6 发 0mg 放弃 → 最终 2975，差 -25mg）。
+                # 现在：存粉模式只认 8 发；退出时 no_gain 归零、振幅恢复进缓补时的值、
+                # 恢复起搅拌，再由下面通用分支给 6 发正常脉冲（0.5V/发 + 预转）兜底。
                 if stock_mode:
                     # 存粉保护：振幅只温柔地 +0.2V/发（不是正常模式的 0.5V），
                     # 连续 TRIM_STOCK_MAX_NOGAIN 发还是一粒不出 → 料道确实空了，
@@ -3809,6 +4481,14 @@ class DispenseRunner:
                                                 f"振幅 +{TRIM_STOCK_AMP_STEP_VPP:.1f}V → "
                                                 f"{new_amp:.2f}V（慢慢加，不搅拌）",
                                                 ceiling=TRIM_AMP_MAX_VPP)
+                elif no_gain >= TRIM_NO_GAIN_LIMIT:
+                    self._log(f"{label}连续 {no_gain} 发没出粉（幅"
+                              f"{'锁定在' if hold_amp else '已抬到'} "
+                              f"{self._applied_amp:.2f}V"
+                              f"{'' if hold_amp else f'/{TRIM_AMP_MAX_VPP:.1f}V'}、"
+                              f"预转 {preroll:.2f}s、杆 {self._applied_window}）"
+                              f"——停手，请检查料斗是否搭桥/缺料")
+                    break
                 elif hold_amp:
                     # 定幅补差（缓补关闭）：不抬振幅，只让搅拌多带一会儿。
                     # 抬档是"试探能不能出料"，一旦出粉就会多冲——用户要的是慢慢补。
@@ -4116,7 +4796,8 @@ class DispenseRunner:
                           f"{target - achieved:.0f}mg 低于下验收线——余料等过了仍不够，"
                           f"转收尾补差（搅拌回 {slow_rpm:.0f} RPM）")
                 try:
-                    self.hub.stir_start(slow_rpm, acc=self.STIR_ACC, direction=0)
+                    self.hub.stir_start(slow_rpm, acc=self.STIR_ACC,
+                                        direction=self._stir_dir())
                     self._applied_stir = slow_rpm
                 except Exception as error:      # noqa: BLE001
                     self._log(f"补差重启搅拌失败（{error}），脉冲补料照常进行")
@@ -4207,6 +4888,11 @@ class DispenseRunner:
             "rod_start_units": int(rod_start),
             "rod_final_units": int(self._applied_window),   # 停在哪儿就是哪儿，不复位
             "amplitude_vpp": round(self._applied_amp, 2),
+            # 搅拌方向（2026-10-30 起一次加粉一换）：0 顺时针 / 1 逆时针。
+            # 换向是为了防粉单向压实/搭桥；留着它才能事后比"两个方向出料有没有差别"。
+            "stir_direction": self._stir_direction,
+            "stir_direction_text": (None if self._stir_direction is None
+                                    else STIR_DIR_TEXT.get(self._stir_direction)),
             "stable": bool(stable),
             "estimated": bool(estimated),      # 天平读不到时用最后一次已知值，标注为估计
             "duration_s": round(time.monotonic() - self._t0, 1),
@@ -4419,6 +5105,8 @@ class DispenseRunner:
                 "stage": stage,
                 "stage_text": STAGE_TEXT.get(stage, stage),
                 "stir_rpm": round(self._applied_stir, 1),
+                # 本次加粉的搅拌方向（0 顺时针 / 1 逆时针）：复盘时要能对上"这次是哪个方向"
+                "stir_direction": self._stir_direction,
                 "rod_units": int(self._applied_window),
                 # 输出关着就报 0.00：切段沉降/收尾称重期间料还在往下走，但**振动是停的**。
                 # 以前这里照抄 `_applied_amp`，页面在沉降那 5–9s 里一直显示"振幅 2.88V"，

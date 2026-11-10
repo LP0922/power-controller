@@ -3,7 +3,7 @@
   "powder_id": "大分子包被剂",
   "head_type": "gravity-cone-vibration",
   "created_at": "2026-10-26 15:58:12",
-  "updated_at": "2026-10-26 17:39:52",
+  "updated_at": "2026-11-09 14:42:30",
   "feedforward_v2": {
     "schema": 2,
     "points": [
@@ -205,6 +205,75 @@
       ],
       "signal_mixed": true,
       "stir_gain_pct": 2025.7
+    }
+  },
+  "stage_recipe_v1": {
+    "schema": 1,
+    "source": "页面「三阶段配方」截图录入（2026-11-09 14:41 用户指定为默认配置），目标 2000mg",
+    "target_mg": 2000,
+    "signal": {
+      "frequency_hz": 80.0,
+      "duty_percent": 50.0
+    },
+    "calibration_amplitude_vpp": 3.0,
+    "settle_gate": {
+      "enabled": true,
+      "rate_ratio": 1.5
+    },
+    "estimated_s": 235.3,
+    "max_run_s": 577.8,
+    "stages": [
+      {
+        "stage": "fast",
+        "stage_text": "快加",
+        "enabled": true,
+        "stir_rpm": 50.0,
+        "rod_units": 780,
+        "amplitude_vpp": 2.5,
+        "rate_mg_s": 60.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1500,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "coarse",
+        "stage_text": "粗加",
+        "enabled": true,
+        "stir_rpm": 40.0,
+        "rod_units": 730,
+        "amplitude_vpp": 2.5,
+        "rate_mg_s": 20.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": 1854.3,
+        "settle_wait_s": null
+      },
+      {
+        "stage": "slow",
+        "stage_text": "慢加",
+        "enabled": true,
+        "stir_rpm": 20.0,
+        "rod_units": 730,
+        "amplitude_vpp": 2.0,
+        "rate_mg_s": 5.0,
+        "duty_percent": 50.0,
+        "switch_mass_mg": null,
+        "settle_wait_s": null
+      }
+    ],
+    "notes": [
+      "三行整套取自 2026-11-09 14:41 页面截图（用户指定「将这个设为大分子包被剂的默认配置」）：快加 50RPM/780/2.50V/60mg·s⁻¹、粗加 40RPM/730/2.50V/20、慢加 20RPM/730/2.00V/5，占空三行都是 50%。",
+      "切点 1500 / 1854.3（页面「加料 mg」列口径），目标 2000mg；慢加那格留空（后端要求切点 < 目标）。",
+      "预计 235.3s、超时上限 577.8s 是当时页面摘要的数字，仅作留档——后端每次会按标定表重算。",
+      "注意：该粉 feedforward_v2 的标定点是 10–100RPM、杆 710–850，速率 2.45–125.1mg·s⁻¹；50RPM 档只有 2.45–6.8mg·s⁻¹（杆 710/715），而快加目标 60mg·s⁻¹ 是靠 780 开度 + 2.5V 振幅打出来的，标定表里没有 50RPM/780 这个点——闭环只能靠振幅在 2.0–3.0V 内加减，别把它当标定能力。",
+      "沉降门开、按段 1.5×；缓补默认关闭（沿用页面默认）。"
+    ],
+    "updated_at": "2026-11-09 14:42:30"
+  },
+  "dispense_flags": {
+    "rod_sweep": {
+      "step": 25,
+      "interval_s": 4.0,
+      "dwell_s": 0.3
     }
   }
 }

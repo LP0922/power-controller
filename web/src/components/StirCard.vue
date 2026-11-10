@@ -41,7 +41,7 @@
     </div>
 
     <div class="metrics">
-      <MetricCard label="实时转速" :value="fmt(store.stir.rpm)" unit="RPM" />
+      <MetricCard label="实时转速" :value="rpmText" unit="RPM" />
       <MetricCard label="使能状态" :value="store.stir.enabled ? '已使能' : '未使能'" />
       <MetricCard label="到位标志" :value="flagText" />
       <MetricCard label="故障位" :value="errText" />
@@ -64,7 +64,16 @@ const acc = ref(200)
 const busy = ref(false)
 const locked = computed(() => store.manualLocked)
 const spinning = computed(() => store.stirRunning)
-const fmt = (v) => (v === null || v === undefined ? '—' : String(v))
+// 转速是带符号的：负 = 逆时针。加粉的搅拌方向现在一次一换（这次顺时针、下次逆时针），
+// 所以显示绝对值 + 顺/逆，免得把「-200」当成故障码。
+const rpmText = computed(() => {
+  const v = store.stir.rpm
+  if (v === null || v === undefined) return '—'
+  const n = Math.abs(Number(v))
+  if (!Number.isFinite(n)) return '—'
+  if (n <= 1) return '0'
+  return `${n} ${Number(v) < 0 ? '逆' : '顺'}`
+})
 
 // flags 低 2 位：bit0 使能、bit1 到位；bit2..3 是堵转/堵转保护
 const FLAG_TEXT = { 0: '使能+到位', 1: '使能', 2: '到位', 3: '使能+到位' }

@@ -41,6 +41,10 @@ export const moveRod = async (target) => (await api.post('/rod/move', { target }
 export const homeRod = async () => (await api.post('/rod/home')).data
 export const stopRod = async () => (await api.post('/rod/stop')).data
 export const refreshRod = async () => (await api.post('/rod/refresh')).data
+// 推杆微滑：当前开度 → +step → −step（rounds 轮）→ 回原位，人工松料/破拱。
+// 加粉运行中也能用（后端只在速率标定期间拒绝）。
+export const wiggleRod = async ({ step, rounds } = {}) =>
+  (await api.post('/rod/wiggle', { step, rounds })).data
 
 // ---------------------------------------------------------------- 旋转搅拌（ZDT Emm42）
 export const startStir = async ({ rpm, acc = 200, direction = 0 }) =>
@@ -93,6 +97,11 @@ export async function getDispensePlanQuick(powder, targetMg) {
 
 export const startDispense = async (payload) => (await api.post('/dispense/start', payload, { timeout: 60000 })).data
 export const cancelDispense = async () => (await api.post('/dispense/stop')).data
+// 断料提问的回答（2026-11-09）：
+//   raise_amp = 提高振幅上限继续加粉；slide_rod = 推杆上下滑动破拱；stop = 停止加粉
+// step / rounds 留空就按后端默认（±25 单位、来回 2 轮）
+export const answerDispense = async (action, options = {}) =>
+  (await api.post('/dispense/answer', { action, ...options })).data
 
 // ---------------------------------------------------------------- 批量（串行排队，每项仍是一次正常加粉）
 export const startDispenseBatch = async (payload) =>
@@ -117,9 +126,8 @@ export const stopCalibration = async () => (await api.post('/calib/stop')).data
 // ---------------------------------------------------------------- 全局
 export const emergencyStop = async () => (await api.post('/estop')).data
 
-// 试验记录：目前后端还没实现（老后端的 /test-records 没搬过来），
-// 「试验记录」页也还是待接入状态。这里保留导出只是为了让那个页面能编译，
-// 真要接的时候数据源是 runs/dispense_*.json 与 runs/batch_*.json。
+// 试验记录：后端把 runs/*.json（dispense_/batch_/calib_）摊平成表格行，
+// 参数 test_type / date_from / date_to（YYYYMMDD）/ result / limit。
 export async function getTestRecords(params = {}) {
   const { data } = await api.get('/test-records', { params })
   return data
